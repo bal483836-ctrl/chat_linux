@@ -1,0 +1,6 @@
+bin/
+recv/
+*.o
+*.swp
+core
+core.*
