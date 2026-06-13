@@ -67,11 +67,11 @@ static void notify_friends(int uid, const char *uname, int online) {
 
 /* 处理私聊 */
 static void do_private(Session *s, Message *m) {
-    if (s->uid < 0) { resp(s->fd, R_AUTH_FAIL, "not login"); return; }
+    if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }
     int to = db_user_id(m->to_name);
-    if (to < 0) { resp(s->fd, R_USER_NOT_FOUND, m->to_name); return; }
+    if (to < 0) { resp(s->fd, RS_USER_NOT_FOUND, m->to_name); return; }
     if (db_is_black(to, s->uid)) {
-        resp(s->fd, R_IN_BLACKLIST, "you are in target's blacklist");
+        resp(s->fd, RS_IN_BLACKLIST, "you are in target's blacklist");
         return;
     }
     /* 持久化 */
@@ -84,15 +84,15 @@ static void do_private(Session *s, Message *m) {
     if (online_push(to, &out) < 0 && mid > 0) {
         db_offline_put(to, mid);
     }
-    resp(s->fd, R_OK, "sent");
+    resp(s->fd, RS_OK, "sent");
 }
 
 /* 处理群聊 */
 static void do_group(Session *s, Message *m) {
-    if (s->uid < 0) { resp(s->fd, R_AUTH_FAIL, "not login"); return; }
+    if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }
     int members[1024];
     int n = db_group_members(m->group_id, members, 1024);
-    if (n <= 0) { resp(s->fd, R_GROUP_NOT_FOUND, "no such group"); return; }
+    if (n <= 0) { resp(s->fd, RS_GROUP_NOT_FOUND, "no such group"); return; }
     int mid = db_save_msg(s->uid, m->group_id, 1, m->body);
     Message out = *m;
     out.type = MSG_GROUP_CHAT;
@@ -104,7 +104,7 @@ static void do_group(Session *s, Message *m) {
         if (online_push(members[i], &out) < 0 && mid > 0)
             db_offline_put(members[i], mid);
     }
-    resp(s->fd, R_OK, "sent");
+    resp(s->fd, RS_OK, "sent");
 }
 
 /* 把若干条历史/离线消息推送给指定 fd */
@@ -159,21 +159,21 @@ void *client_thread(void *arg) {
         switch (m.type) {
         case MSG_REGISTER: {
             char u[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
-            if (split_userpass(m.body, u, p) < 0) { resp(fd, R_FAIL, "bad format"); break; }
+            if (split_userpass(m.body, u, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
             int id = db_register(u, p);
             if (id < 0) resp(fd, -id, "register failed");
-            else        resp(fd, R_OK, "registered");
+            else        resp(fd, RS_OK, "registered");
             break;
         }
         case MSG_LOGIN: {
             char u[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
-            if (split_userpass(m.body, u, p) < 0) { resp(fd, R_FAIL, "bad format"); break; }
+            if (split_userpass(m.body, u, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
             int id = db_login(u, p);
-            if (id < 0) { resp(fd, R_AUTH_FAIL, "login failed"); break; }
+            if (id < 0) { resp(fd, RS_AUTH_FAIL, "login failed"); break; }
             sess.uid = id;
             strncpy(sess.name, u, MAX_NAME_LEN - 1);
             online_add(id, u, fd);
-            resp(fd, R_OK, u);
+            resp(fd, RS_OK, u);
             on_login_success(&sess);
             break;
         }
@@ -185,30 +185,30 @@ void *client_thread(void *arg) {
 
         case MSG_FRIEND_ADD: {
             int fid = db_user_id(m.to_name);
-            if (fid < 0) { resp(fd, R_USER_NOT_FOUND, m.to_name); break; }
+            if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_friend_add(sess.uid, fid);
-            resp(fd, R_OK, "friend added");
+            resp(fd, RS_OK, "friend added");
             break;
         }
         case MSG_FRIEND_DEL: {
             int fid = db_user_id(m.to_name);
-            if (fid < 0) { resp(fd, R_USER_NOT_FOUND, m.to_name); break; }
+            if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_friend_del(sess.uid, fid);
-            resp(fd, R_OK, "friend deleted");
+            resp(fd, RS_OK, "friend deleted");
             break;
         }
         case MSG_BLACK_ADD: {
             int fid = db_user_id(m.to_name);
-            if (fid < 0) { resp(fd, R_USER_NOT_FOUND, m.to_name); break; }
+            if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_black_set(sess.uid, fid, 1);
-            resp(fd, R_OK, "blacklisted");
+            resp(fd, RS_OK, "blacklisted");
             break;
         }
         case MSG_BLACK_DEL: {
             int fid = db_user_id(m.to_name);
-            if (fid < 0) { resp(fd, R_USER_NOT_FOUND, m.to_name); break; }
+            if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_black_set(sess.uid, fid, 0);
-            resp(fd, R_OK, "unblacklisted");
+            resp(fd, RS_OK, "unblacklisted");
             break;
         }
         case MSG_FRIEND_LIST: {
@@ -220,13 +220,13 @@ void *client_thread(void *arg) {
         }
         case MSG_GROUP_CREATE: {
             int gid = db_group_create(sess.uid, m.body);
-            if (gid < 0) resp(fd, R_FAIL, "create group failed");
-            else { char t[32]; snprintf(t, sizeof(t), "%d", gid); resp(fd, R_OK, t); }
+            if (gid < 0) resp(fd, RS_FAIL, "create group failed");
+            else { char t[32]; snprintf(t, sizeof(t), "%d", gid); resp(fd, RS_OK, t); }
             break;
         }
         case MSG_GROUP_JOIN:
             db_group_join(m.group_id, sess.uid);
-            resp(fd, R_OK, "joined");
+            resp(fd, RS_OK, "joined");
             break;
 
         case MSG_GROUP_LIST: {
@@ -238,7 +238,7 @@ void *client_thread(void *arg) {
         }
         case MSG_HISTORY_PRIV: {
             int other = db_user_id(m.to_name);
-            if (other < 0) { resp(fd, R_USER_NOT_FOUND, m.to_name); break; }
+            if (other < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             OfflineRow rows[64];
             int n = db_history_priv(sess.uid, other, rows, 64);
             push_history(fd, rows, n);
@@ -256,7 +256,7 @@ void *client_thread(void *arg) {
         case MSG_FILE_CHUNK:
         case MSG_FILE_END: {
             int to = db_user_id(m.to_name);
-            if (to < 0) { resp(fd, R_USER_NOT_FOUND, m.to_name); break; }
+            if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             Message f = m;
             strncpy(f.from_name, sess.name, MAX_NAME_LEN - 1);
             online_push(to, &f);
@@ -264,7 +264,7 @@ void *client_thread(void *arg) {
         }
 
         default:
-            resp(fd, R_FAIL, "unknown msg");
+            resp(fd, RS_FAIL, "unknown msg");
         }
     }
 

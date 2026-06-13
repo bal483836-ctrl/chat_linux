@@ -17,7 +17,8 @@
 #include <string.h>
 
 static void do_login_clicked(GtkButton *b, gpointer ud);
-static void do_register_clicked(GtkButton *b, gpointer ud);
+static void open_register_win(GtkButton *b, gpointer ud);
+static void do_register_confirm(GtkButton *b, gpointer ud);
 static void on_friend_selected(GtkTreeSelection *sel, gpointer ud);
 static void on_group_selected (GtkTreeSelection *sel, gpointer ud);
 static void on_send_clicked   (GtkButton *b, gpointer ud);
@@ -30,28 +31,41 @@ static void on_joingroup      (GtkButton *b, gpointer ud);
 static void on_sendfile       (GtkButton *b, gpointer ud);
 static void on_history        (GtkButton *b, gpointer ud);
 
+/* ===== 工具: 服务器地址 + 关窗时是否退出 ===== */
+static const char *server_host(void) {
+    const char *h = getenv("CHAT_SERVER_HOST");
+    return (h && *h) ? h : "127.0.0.1";
+}
+
+/* 关闭登录窗时, 若主窗已切换, 不退出 GTK; 否则退出. */
+static gboolean on_login_close(GtkWidget *w, GdkEvent *e, gpointer ud) {
+    (void)w; (void)e; (void)ud;
+    if (!CTX.main_win) gtk_main_quit();
+    return FALSE;
+}
+
 /* ===================== 登录窗 ===================== */
 void show_login(int argc, char **argv) {
     gtk_init(&argc, &argv);
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(w), "chat_linux 登录");
-    gtk_window_set_default_size(GTK_WINDOW(w), 280, 200);
-    g_signal_connect(w, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    gtk_window_set_default_size(GTK_WINDOW(w), 300, 180);
+    gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
+    g_signal_connect(w, "delete-event", G_CALLBACK(on_login_close), NULL);
 
     GtkWidget *grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
-    gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
-    gtk_container_set_border_width(GTK_CONTAINER(grid), 10);
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 14);
     gtk_container_add(GTK_CONTAINER(w), grid);
 
     GtkWidget *lu = gtk_label_new("用户名");
     GtkWidget *lp = gtk_label_new("密码");
-    GtkWidget *lh = gtk_label_new("服务器");
     GtkWidget *eu = gtk_entry_new();
     GtkWidget *ep = gtk_entry_new();
-    GtkWidget *eh = gtk_entry_new();
     gtk_entry_set_visibility(GTK_ENTRY(ep), FALSE);
-    gtk_entry_set_text(GTK_ENTRY(eh), "127.0.0.1");
+    gtk_widget_set_hexpand(eu, TRUE);
+    gtk_widget_set_hexpand(ep, TRUE);
 
     GtkWidget *bl = gtk_button_new_with_label("登录");
     GtkWidget *br = gtk_button_new_with_label("注册");
@@ -60,18 +74,19 @@ void show_login(int argc, char **argv) {
     gtk_grid_attach(GTK_GRID(grid), eu, 1, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), lp, 0, 1, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), ep, 1, 1, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), lh, 0, 2, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), eh, 1, 2, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), bl, 0, 3, 1, 1);
-    gtk_grid_attach(GTK_GRID(grid), br, 1, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), bl, 0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), br, 1, 2, 1, 1);
 
     CTX.login_win  = w;
     CTX.login_user = eu;
     CTX.login_pass = ep;
-    CTX.login_host = eh;
+    CTX.login_host = NULL;
 
     g_signal_connect(bl, "clicked", G_CALLBACK(do_login_clicked),    NULL);
-    g_signal_connect(br, "clicked", G_CALLBACK(do_register_clicked), NULL);
+    g_signal_connect(br, "clicked", G_CALLBACK(open_register_win),   NULL);
+    /* 回车直接登录 */
+    g_signal_connect(ep, "activate", G_CALLBACK(do_login_clicked),   NULL);
+    g_signal_connect(eu, "activate", G_CALLBACK(do_login_clicked),   NULL);
 
     gtk_widget_show_all(w);
     gtk_main();
@@ -82,60 +97,138 @@ static void do_login_clicked(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     const char *u = gtk_entry_get_text(GTK_ENTRY(CTX.login_user));
     const char *p = gtk_entry_get_text(GTK_ENTRY(CTX.login_pass));
-    const char *h = gtk_entry_get_text(GTK_ENTRY(CTX.login_host));
-    if (!*u || !*p) return;
-    if (CTX.sockfd <= 0 && net_connect(h, SERVER_PORT) < 0) {
+    if (!*u || !*p) {
         GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(CTX.login_win),
-            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
-            "无法连接服务器 %s:%d", h, SERVER_PORT);
+            GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+            "请填写用户名和密码");
         gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d);
         return;
     }
-    /* 发送登录 */
-    char body[128];
-    snprintf(body, sizeof(body), "%s\n%s", u, p);
+    if (CTX.sockfd <= 0 && net_connect(server_host(), SERVER_PORT) < 0) {
+        GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(CTX.login_win),
+            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+            "无法连接服务器 %s:%d\n请确认 chat_server 已启动", server_host(), SERVER_PORT);
+        gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d);
+        return;
+    }
+    char body[128]; snprintf(body, sizeof(body), "%s\n%s", u, p);
     Message m; memset(&m, 0, sizeof(m));
     m.type = MSG_LOGIN;
     strncpy(m.body, body, MAX_BODY_LEN - 1); m.body_len = strlen(body);
     net_send(&m);
 
-    /* 同步等待登录应答 */
     Message resp;
-    if (recv_msg(CTX.sockfd, &resp) != 0 || resp.type != MSG_RESPONSE || resp.status != R_OK) {
+    if (recv_msg(CTX.sockfd, &resp) != 0 || resp.type != MSG_RESPONSE || resp.status != RS_OK) {
         GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(CTX.login_win),
-            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK, "登录失败");
+            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+            "登录失败: %s", resp.body[0] ? resp.body : "用户名或密码错误");
         gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d);
         net_close();
         return;
     }
     strncpy(CTX.username, u, MAX_NAME_LEN - 1);
 
-    /* 启动接收线程 */
-    pthread_create(&CTX.recv_tid, NULL, recv_thread, NULL);
-
-    gtk_widget_destroy(CTX.login_win);
+    /* 先创建主窗 + 隐藏登录窗, 再启动接收线程 — 确保所有 UI 控件就绪 */
     show_main();
+    gtk_widget_hide(CTX.login_win);
+    pthread_create(&CTX.recv_tid, NULL, recv_thread, NULL);
 }
 
-static void do_register_clicked(GtkButton *b, gpointer ud) {
+/* ===================== 注册窗 (独立) ===================== */
+static GtkWidget *reg_win = NULL;
+static GtkWidget *reg_user = NULL;
+static GtkWidget *reg_pass = NULL;
+static GtkWidget *reg_pass2 = NULL;
+
+static void open_register_win(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
-    const char *u = gtk_entry_get_text(GTK_ENTRY(CTX.login_user));
-    const char *p = gtk_entry_get_text(GTK_ENTRY(CTX.login_pass));
-    const char *h = gtk_entry_get_text(GTK_ENTRY(CTX.login_host));
-    if (!*u || !*p) return;
-    if (CTX.sockfd <= 0 && net_connect(h, SERVER_PORT) < 0) return;
+    if (reg_win) { gtk_window_present(GTK_WINDOW(reg_win)); return; }
+
+    GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(w), "chat_linux 注册");
+    gtk_window_set_default_size(GTK_WINDOW(w), 320, 220);
+    gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
+    gtk_window_set_transient_for(GTK_WINDOW(w), GTK_WINDOW(CTX.login_win));
+    gtk_window_set_modal(GTK_WINDOW(w), TRUE);
+
+    GtkWidget *grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
+    gtk_container_set_border_width(GTK_CONTAINER(grid), 14);
+    gtk_container_add(GTK_CONTAINER(w), grid);
+
+    GtkWidget *lu = gtk_label_new("用户名");
+    GtkWidget *lp = gtk_label_new("密码");
+    GtkWidget *l2 = gtk_label_new("确认密码");
+    reg_user  = gtk_entry_new();
+    reg_pass  = gtk_entry_new();
+    reg_pass2 = gtk_entry_new();
+    gtk_entry_set_visibility(GTK_ENTRY(reg_pass),  FALSE);
+    gtk_entry_set_visibility(GTK_ENTRY(reg_pass2), FALSE);
+    gtk_widget_set_hexpand(reg_user, TRUE);
+
+    GtkWidget *bok  = gtk_button_new_with_label("注册");
+    GtkWidget *bcan = gtk_button_new_with_label("返回登录");
+
+    gtk_grid_attach(GTK_GRID(grid), lu,        0, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), reg_user,  1, 0, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), lp,        0, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), reg_pass,  1, 1, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), l2,        0, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), reg_pass2, 1, 2, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), bok,       0, 3, 1, 1);
+    gtk_grid_attach(GTK_GRID(grid), bcan,      1, 3, 1, 1);
+
+    g_signal_connect(bok,  "clicked", G_CALLBACK(do_register_confirm), NULL);
+    g_signal_connect_swapped(bcan, "clicked", G_CALLBACK(gtk_widget_destroy), w);
+    g_signal_connect(w, "destroy", G_CALLBACK(gtk_widget_destroyed), &reg_win);
+
+    reg_win = w;
+    gtk_widget_show_all(w);
+}
+
+static void do_register_confirm(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    const char *u  = gtk_entry_get_text(GTK_ENTRY(reg_user));
+    const char *p  = gtk_entry_get_text(GTK_ENTRY(reg_pass));
+    const char *p2 = gtk_entry_get_text(GTK_ENTRY(reg_pass2));
+    if (!*u || !*p) {
+        GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(reg_win),
+            GTK_DIALOG_MODAL, GTK_MESSAGE_WARNING, GTK_BUTTONS_OK,
+            "用户名和密码不能为空");
+        gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d); return;
+    }
+    if (strcmp(p, p2) != 0) {
+        GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(reg_win),
+            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+            "两次密码输入不一致");
+        gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d); return;
+    }
+    if (CTX.sockfd <= 0 && net_connect(server_host(), SERVER_PORT) < 0) {
+        GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(reg_win),
+            GTK_DIALOG_MODAL, GTK_MESSAGE_ERROR, GTK_BUTTONS_OK,
+            "无法连接服务器 %s:%d", server_host(), SERVER_PORT);
+        gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d); return;
+    }
     char body[128]; snprintf(body, sizeof(body), "%s\n%s", u, p);
     Message m; memset(&m, 0, sizeof(m));
     m.type = MSG_REGISTER;
     strncpy(m.body, body, MAX_BODY_LEN - 1); m.body_len = strlen(body);
     net_send(&m);
     Message resp;
-    recv_msg(CTX.sockfd, &resp);
-    GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(CTX.login_win),
+    if (recv_msg(CTX.sockfd, &resp) != 0) return;
+    int ok = (resp.type == MSG_RESPONSE && resp.status == RS_OK);
+    GtkWidget *d = gtk_message_dialog_new(GTK_WINDOW(reg_win),
         GTK_DIALOG_MODAL,
-        resp.status == R_OK ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR,
-        GTK_BUTTONS_OK, "%s", resp.body);
+        ok ? GTK_MESSAGE_INFO : GTK_MESSAGE_ERROR,
+        GTK_BUTTONS_OK, "%s", ok ? "注册成功, 可以返回登录" : "注册失败: 用户已存在或服务器拒绝");
     gtk_dialog_run(GTK_DIALOG(d)); gtk_widget_destroy(d);
+    if (ok) {
+        /* 把注册的用户名回填到登录窗, 关闭注册窗 */
+        gtk_entry_set_text(GTK_ENTRY(CTX.login_user), u);
+        gtk_entry_set_text(GTK_ENTRY(CTX.login_pass), "");
+        gtk_widget_destroy(reg_win);
+    }
 }
 
 /* ===================== 主窗 ===================== */

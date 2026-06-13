@@ -71,7 +71,7 @@ int db_register(const char *user, const char *pass) {
     LOCK();
     int rc;
     if (mysql_query(g_conn, sql) != 0) {
-        rc = (mysql_errno(g_conn) == 1062) ? -R_USER_EXIST : -R_FAIL;
+        rc = (mysql_errno(g_conn) == 1062) ? -RS_USER_EXIST : -RS_FAIL;
         UNLOCK(); return rc;
     }
     rc = (int)mysql_insert_id(g_conn);
@@ -86,7 +86,7 @@ int db_login(const char *user, const char *pass) {
     snprintf(sql, sizeof(sql),
         "SELECT id FROM users WHERE username='%s' AND password='%s'", eu, hash);
     LOCK();
-    int id = -R_AUTH_FAIL;
+    int id = -RS_AUTH_FAIL;
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;

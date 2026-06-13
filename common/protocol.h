@@ -45,16 +45,18 @@ enum MsgType {
     MSG_NOTIFY_OFFLINE = 61,
 };
 
-/* 应答状态码 */
+/* 应答状态码.
+ * 前缀用 RS_ (RespStatus) 而不是 R_, 避免与 <unistd.h> 里的
+ * #define R_OK 4 等 POSIX access(2) 宏冲突. */
 enum RespStatus {
-    R_OK              = 0,
-    R_FAIL            = 1,
-    R_AUTH_FAIL       = 2,
-    R_USER_EXIST      = 3,
-    R_USER_NOT_FOUND  = 4,
-    R_NOT_FRIEND      = 5,
-    R_IN_BLACKLIST    = 6,
-    R_GROUP_NOT_FOUND = 7,
+    RS_OK              = 0,
+    RS_FAIL            = 1,
+    RS_AUTH_FAIL       = 2,
+    RS_USER_EXIST      = 3,
+    RS_USER_NOT_FOUND  = 4,
+    RS_NOT_FRIEND      = 5,
+    RS_IN_BLACKLIST    = 6,
+    RS_GROUP_NOT_FOUND = 7,
 };
 
 /* 线上消息结构。固定大小, 简化收发. */
