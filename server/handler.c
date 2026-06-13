@@ -13,7 +13,8 @@
 typedef struct {
     int  fd;
     int  uid;                       /* 已登录用户 id, 未登录为 -1 */
-    char name[MAX_NAME_LEN];
+    char account[MAX_NAME_LEN];     /* "100001" */
+    char nick[MAX_NAME_LEN];        /* 昵称 */
 } Session;
 
 static void resp(int fd, int status, const char *text) {
@@ -42,23 +43,23 @@ static int split_userpass(const char *body, char *u, char *p) {
 
 static int is_user_online(int uid) { return online_get_fd_by_id(uid) >= 0; }
 
-/* 通知好友: 上下线广播 */
-static void notify_friends(int uid, const char *uname, int online) {
-    /* 用于查询此人的所有"反向好友": 即把我加为好友的人 */
+/* 通知好友: 上下线广播.
+ * 我们要给那些把我加为好友的人推 NOTIFY. friend_list 的第一列是账号. */
+static void notify_friends(int uid, const char *account, const char *nick, int online) {
     char list[8192]; list[0] = 0;
     db_friend_list(uid, list, sizeof(list), is_user_online);
-    /* 遍历: 给每个在线好友推一条 */
     Message n;
     memset(&n, 0, sizeof(n));
     n.type = online ? MSG_NOTIFY_ONLINE : MSG_NOTIFY_OFFLINE;
-    strncpy(n.from_name, uname, MAX_NAME_LEN - 1);
+    strncpy(n.from_name, account, MAX_NAME_LEN - 1);
+    strncpy(n.from_nick, nick,    MAX_NAME_LEN - 1);
     fill_timestamp(n.timestamp, sizeof(n.timestamp));
     char *line = strtok(list, "\n");
     while (line) {
         char *tab = strchr(line, '\t');
         if (tab) {
-            *tab = 0;
-            int fid = db_user_id(line);
+            *tab = 0;            /* line 是账号字符串 */
+            int fid = db_user_id_by_account(line);
             if (fid > 0) online_push(fid, &n);
         }
         line = strtok(NULL, "\n");
@@ -68,22 +69,19 @@ static void notify_friends(int uid, const char *uname, int online) {
 /* 处理私聊 */
 static void do_private(Session *s, Message *m) {
     if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }
-    int to = db_user_id(m->to_name);
+    int to = db_user_id_by_account(m->to_name);
     if (to < 0) { resp(s->fd, RS_USER_NOT_FOUND, m->to_name); return; }
     if (db_is_black(to, s->uid)) {
-        resp(s->fd, RS_IN_BLACKLIST, "you are in target's blacklist");
+        resp(s->fd, RS_IN_BLACKLIST, "对方将你拉黑, 无法发送");
         return;
     }
-    /* 持久化 */
     int mid = db_save_msg(s->uid, to, 0, m->body);
-    /* 转发 */
     Message out = *m;
     out.type = MSG_PRIVATE_CHAT;
-    strncpy(out.from_name, s->name, MAX_NAME_LEN - 1);
+    strncpy(out.from_name, s->account, MAX_NAME_LEN - 1);
+    strncpy(out.from_nick, s->nick,    MAX_NAME_LEN - 1);
     fill_timestamp(out.timestamp, sizeof(out.timestamp));
-    if (online_push(to, &out) < 0 && mid > 0) {
-        db_offline_put(to, mid);
-    }
+    if (online_push(to, &out) < 0 && mid > 0) db_offline_put(to, mid);
     resp(s->fd, RS_OK, "sent");
 }
 
@@ -96,9 +94,9 @@ static void do_group(Session *s, Message *m) {
     int mid = db_save_msg(s->uid, m->group_id, 1, m->body);
     Message out = *m;
     out.type = MSG_GROUP_CHAT;
-    strncpy(out.from_name, s->name, MAX_NAME_LEN - 1);
+    strncpy(out.from_name, s->account, MAX_NAME_LEN - 1);
+    strncpy(out.from_nick, s->nick,    MAX_NAME_LEN - 1);
     fill_timestamp(out.timestamp, sizeof(out.timestamp));
-    /* 在线广播 + 离线入库 */
     for (int i = 0; i < n; ++i) {
         if (members[i] == s->uid) continue;
         if (online_push(members[i], &out) < 0 && mid > 0)
@@ -107,14 +105,15 @@ static void do_group(Session *s, Message *m) {
     resp(s->fd, RS_OK, "sent");
 }
 
-/* 把若干条历史/离线消息推送给指定 fd */
+/* push_history: rows[i].from_name 已经是发送者昵称, from_id 给我们账号. */
 static void push_history(int fd, OfflineRow *rows, int n) {
     for (int i = 0; i < n; ++i) {
         Message m;
         memset(&m, 0, sizeof(m));
         m.type     = rows[i].msg_type == 0 ? MSG_PRIVATE_CHAT : MSG_GROUP_CHAT;
         m.group_id = rows[i].msg_type == 1 ? rows[i].target_id : 0;
-        strncpy(m.from_name, rows[i].from_name, MAX_NAME_LEN - 1);
+        snprintf(m.from_name, MAX_NAME_LEN, "%d", rows[i].from_id + ACCOUNT_BASE);
+        strncpy(m.from_nick, rows[i].from_name, MAX_NAME_LEN - 1);
         strncpy(m.timestamp, rows[i].sent_at,   sizeof(m.timestamp) - 1);
         strncpy(m.body,      rows[i].content,   MAX_BODY_LEN - 1);
         m.body_len = strlen(m.body);
@@ -153,7 +152,7 @@ static void on_login_success(Session *s) {
     int n = db_offline_take(s->uid, rows, 64);
     if (n > 0) push_history(s->fd, rows, n);
     /* 通知好友本人上线 */
-    notify_friends(s->uid, s->name, 1);
+    notify_friends(s->uid, s->account, s->nick, 1);
 }
 
 void *client_thread(void *arg) {
@@ -161,28 +160,41 @@ void *client_thread(void *arg) {
     free(arg);
     pthread_detach(pthread_self());
 
-    Session sess = { .fd = fd, .uid = -1, .name = {0} };
+    Session sess = { .fd = fd, .uid = -1 };
     Message m;
 
     while (recv_msg(fd, &m) == 0) {
         switch (m.type) {
         case MSG_REGISTER: {
-            char u[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
-            if (split_userpass(m.body, u, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
-            int id = db_register(u, p);
-            if (id < 0) resp(fd, -id, "register failed");
-            else        resp(fd, RS_OK, "registered");
+            /* body = "nickname\npassword" */
+            char nick[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
+            if (split_userpass(m.body, nick, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
+            int id = db_register(nick, p);
+            if (id < 0) { resp(fd, RS_FAIL, "注册失败"); break; }
+            /* 返回分配的账号 (字符串) */
+            char acc[16]; snprintf(acc, sizeof(acc), "%d", id + ACCOUNT_BASE);
+            resp(fd, RS_OK, acc);
             break;
         }
         case MSG_LOGIN: {
-            char u[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
-            if (split_userpass(m.body, u, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
-            int id = db_login(u, p);
-            if (id < 0) { resp(fd, RS_AUTH_FAIL, "login failed"); break; }
+            /* body = "account\npassword" */
+            char acc[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
+            if (split_userpass(m.body, acc, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
+            int uid = atoi(acc) - ACCOUNT_BASE;
+            if (uid <= 0) { resp(fd, RS_AUTH_FAIL, "账号格式错误"); break; }
+            int id = db_login_by_id(uid, p);
+            if (id < 0) { resp(fd, RS_AUTH_FAIL, "账号或密码错误"); break; }
             sess.uid = id;
-            strncpy(sess.name, u, MAX_NAME_LEN - 1);
-            online_add(id, u, fd);
-            resp(fd, RS_OK, u);
+            strncpy(sess.account, acc, MAX_NAME_LEN - 1);
+            db_get_nick(id, sess.nick, sizeof(sess.nick));
+            online_add(id, acc, fd);
+            /* 应答 body = "<account>\n<nickname>" 客户端解析 */
+            Message rr; memset(&rr, 0, sizeof(rr));
+            rr.type = MSG_RESPONSE; rr.status = RS_OK;
+            snprintf(rr.body, sizeof(rr.body), "%s\n%s", acc, sess.nick);
+            rr.body_len = strlen(rr.body);
+            fill_timestamp(rr.timestamp, sizeof(rr.timestamp));
+            send_msg(fd, &rr);
             on_login_success(&sess);
             break;
         }
@@ -193,28 +205,28 @@ void *client_thread(void *arg) {
         case MSG_GROUP_CHAT:   do_group  (&sess, &m); break;
 
         case MSG_FRIEND_ADD: {
-            int fid = db_user_id(m.to_name);
+            int fid = db_user_id_by_account(m.to_name);
             if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_friend_add(sess.uid, fid);
             resp(fd, RS_OK, "friend added");
             break;
         }
         case MSG_FRIEND_DEL: {
-            int fid = db_user_id(m.to_name);
+            int fid = db_user_id_by_account(m.to_name);
             if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_friend_del(sess.uid, fid);
             resp(fd, RS_OK, "friend deleted");
             break;
         }
         case MSG_BLACK_ADD: {
-            int fid = db_user_id(m.to_name);
+            int fid = db_user_id_by_account(m.to_name);
             if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_black_set(sess.uid, fid, 1);
             resp(fd, RS_OK, "blacklisted");
             break;
         }
         case MSG_BLACK_DEL: {
-            int fid = db_user_id(m.to_name);
+            int fid = db_user_id_by_account(m.to_name);
             if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             db_black_set(sess.uid, fid, 0);
             resp(fd, RS_OK, "unblacklisted");
@@ -246,7 +258,7 @@ void *client_thread(void *arg) {
             break;
         }
         case MSG_HISTORY_PRIV: {
-            int other = db_user_id(m.to_name);
+            int other = db_user_id_by_account(m.to_name);
             if (other < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             OfflineRow rows[64];
             int n = db_history_priv(sess.uid, other, rows, 64);
@@ -264,17 +276,17 @@ void *client_thread(void *arg) {
         case MSG_FILE_BEGIN:
         case MSG_FILE_CHUNK:
         case MSG_FILE_END: {
-            int to = db_user_id(m.to_name);
+            int to = db_user_id_by_account(m.to_name);
             if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             Message f = m;
-            strncpy(f.from_name, sess.name, MAX_NAME_LEN - 1);
+            strncpy(f.from_name, sess.account, MAX_NAME_LEN - 1);
             online_push(to, &f);
             break;
         }
 
         /* ===== 好友申请流程 ===== */
         case MSG_FRIEND_REQ: {
-            int to = db_user_id(m.to_name);
+            int to = db_user_id_by_account(m.to_name);
             if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
             if (to == sess.uid) { resp(fd, RS_FAIL, "不能加自己为好友"); break; }
             if (db_is_friend(sess.uid, to)) {
@@ -286,11 +298,12 @@ void *client_thread(void *arg) {
             Message n; memset(&n, 0, sizeof(n));
             n.type   = MSG_FRIEND_REQ_NOTIFY;
             n.status = reqid;
-            strncpy(n.from_name, sess.name, MAX_NAME_LEN - 1);
+            strncpy(n.from_name, sess.account, MAX_NAME_LEN - 1);
+            strncpy(n.from_nick, sess.nick,    MAX_NAME_LEN - 1);
             strncpy(n.body, m.body, MAX_BODY_LEN - 1);
             n.body_len = strlen(n.body);
             fill_timestamp(n.timestamp, sizeof(n.timestamp));
-            online_push(to, &n);    /* 不在线下次登录时拉列表 */
+            online_push(to, &n);
             resp(fd, RS_OK, "已发送好友申请");
             break;
         }
@@ -319,7 +332,7 @@ void *client_thread(void *arg) {
                     Message rr; memset(&rr, 0, sizeof(rr));
                     rr.type = MSG_RESPONSE; rr.status = RS_OK;
                     snprintf(rr.body, sizeof(rr.body),
-                        "%s 同意了你的好友申请", sess.name);
+                        "%s 同意了你的好友申请", sess.nick);
                     rr.body_len = strlen(rr.body);
                     online_push(from_id, &rr);
                 }
@@ -348,7 +361,8 @@ void *client_thread(void *arg) {
             n.type     = MSG_GROUP_JOIN_NOTIFY;
             n.status   = reqid;
             n.group_id = gid;
-            strncpy(n.from_name, sess.name, MAX_NAME_LEN - 1);
+            strncpy(n.from_name, sess.account, MAX_NAME_LEN - 1);
+            strncpy(n.from_nick, sess.nick,    MAX_NAME_LEN - 1);
             db_group_name(gid, n.to_name, MAX_NAME_LEN);
             strncpy(n.body, m.body, MAX_BODY_LEN - 1);
             n.body_len = strlen(n.body);
@@ -420,7 +434,7 @@ void *client_thread(void *arg) {
 out:
     if (sess.uid > 0) {
         db_set_online(sess.uid, 0);
-        notify_friends(sess.uid, sess.name, 0);
+        notify_friends(sess.uid, sess.account, sess.nick, 0);
     }
     online_remove_by_fd(fd);
     close(fd);

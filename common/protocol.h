@@ -70,14 +70,22 @@ enum RespStatus {
     RS_GROUP_NOT_FOUND = 7,
 };
 
-/* 线上消息结构。固定大小, 简化收发. */
+/* 线上消息结构。固定大小, 简化收发.
+ *
+ * 寻址规则:
+ *   from_name  发送者账号 (6 位数字字符串, 由服务器自动生成)
+ *   to_name    接收者账号
+ *   from_nick  发送者昵称 (服务器填充, 客户端直接显示)
+ *
+ * 账号生成: account = 100000 + users.id, 第一名用户得到 "100001". */
 typedef struct {
     uint32_t type;                       /* enum MsgType                    */
     uint32_t status;                     /* 应答码/文件总大小等            */
     uint32_t group_id;                   /* 群号                            */
     uint32_t body_len;                   /* body 实际字节数 (<= MAX_BODY_LEN)*/
-    char     from_name[MAX_NAME_LEN];    /* 发送者                          */
-    char     to_name[MAX_NAME_LEN];      /* 接收者(私聊)                    */
+    char     from_name[MAX_NAME_LEN];    /* 发送者账号                      */
+    char     to_name[MAX_NAME_LEN];      /* 接收者账号                      */
+    char     from_nick[MAX_NAME_LEN];    /* 发送者昵称                      */
     char     timestamp[32];              /* "YYYY-MM-DD HH:MM:SS"           */
     char     body[MAX_BODY_LEN];         /* 文本/二进制载荷                 */
 } Message;

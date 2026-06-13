@@ -7,10 +7,14 @@
 int  db_init(const char *host, const char *user, const char *pass, const char *dbname);
 void db_close(void);
 
-/* 用户 */
-int  db_register(const char *user, const char *pass);              /* 返回 user_id 或 -错误码 */
-int  db_login   (const char *user, const char *pass);              /* 返回 user_id 或 -错误码 */
-int  db_user_id (const char *user);                                /* 不存在返回 -1 */
+/* 用户.
+ * 账号 = 100000 + id, 客户端看到的字符串 "100001" 直接代表 id=1. */
+#define ACCOUNT_BASE  100000
+int  db_register(const char *nickname, const char *pass);          /* 返回 id 或 -错误码 */
+int  db_login_by_id(int user_id, const char *pass);                /* 返回 user_id 或 -错误码 */
+int  db_user_id_by_account(const char *account);                   /* 字符串→id, 错误返回 -1 */
+int  db_get_nick (int user_id, char *out, int outsz);              /* 0/-1 */
+int  db_get_avatar_color(int user_id);                             /* 0..9 */
 int  db_set_online(int user_id, int online);
 
 /* 好友/黑名单 */

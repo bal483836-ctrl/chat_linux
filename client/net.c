@@ -64,10 +64,12 @@ static gboolean dispatch_in_main(gpointer data) {
     case MSG_PRIVATE_CHAT:
     case MSG_GROUP_CHAT: {
         char who[96];
+        /* from_nick 是昵称 (服务器填), from_name 是账号 */
+        const char *nick = m->from_nick[0] ? m->from_nick : m->from_name;
         if (m->type == MSG_GROUP_CHAT)
-            snprintf(who, sizeof(who), "%s@群%u", m->from_name, m->group_id);
+            snprintf(who, sizeof(who), "%s@群%u", nick, m->group_id);
         else
-            snprintf(who, sizeof(who), "%s", m->from_name);
+            snprintf(who, sizeof(who), "%s", nick);
         ui_append_chat(who, m->timestamp, m->body);
         break;
     }
@@ -79,15 +81,14 @@ static gboolean dispatch_in_main(gpointer data) {
         break;
     case MSG_NOTIFY_ONLINE: {
         char s[128];
-        snprintf(s, sizeof(s), "好友 %s 上线", m->from_name);
+        snprintf(s, sizeof(s), "好友 %s 上线", m->from_nick[0] ? m->from_nick : m->from_name);
         ui_append_chat("[通知]", m->timestamp, s);
-        /* 顺便刷新好友列表 */
         net_send_text(MSG_FRIEND_LIST, NULL, 0, NULL);
         break;
     }
     case MSG_NOTIFY_OFFLINE: {
         char s[128];
-        snprintf(s, sizeof(s), "好友 %s 下线", m->from_name);
+        snprintf(s, sizeof(s), "好友 %s 下线", m->from_nick[0] ? m->from_nick : m->from_name);
         ui_append_chat("[通知]", m->timestamp, s);
         net_send_text(MSG_FRIEND_LIST, NULL, 0, NULL);
         break;
@@ -102,18 +103,24 @@ static gboolean dispatch_in_main(gpointer data) {
 
     /* ===== 申请流程相关 ===== */
     case MSG_FRIEND_REQ_NOTIFY: {
-        ui_add_request(0, (int)m->status, m->from_name, NULL, m->body, 0);
+        /* from_name=申请人账号, from_nick=申请人昵称 */
+        int color = 0;
+        for (const char *q = m->from_nick; *q; ++q) color = (color * 131 + (unsigned char)*q) & 0xFFFF;
+        color %= 10;
+        ui_add_request(0, (int)m->status, m->from_name, m->from_nick, color,
+                       NULL, m->body, 0);
         char t[256];
-        snprintf(t, sizeof(t), "%s 请求加你为好友\n附言: %s\n请到左侧 通知 页处理",
-                 m->from_name, m->body);
+        snprintf(t, sizeof(t), "%s (%s) 请求加你为好友\n附言: %s\n请到左侧 通知 页处理",
+                 m->from_nick, m->from_name, m->body);
         ui_notify_text("好友申请", t);
         break;
     }
     case MSG_GROUP_JOIN_NOTIFY: {
-        ui_add_request(1, (int)m->status, m->from_name, m->to_name, m->body, (int)m->group_id);
+        ui_add_request(1, (int)m->status, m->from_name, m->from_nick, (int)m->group_id % 10,
+                       m->to_name, m->body, (int)m->group_id);
         char t[256];
         snprintf(t, sizeof(t), "%s 申请加入群【%s】\n附言: %s\n请到左侧 通知 页处理",
-                 m->from_name, m->to_name, m->body);
+                 m->from_nick, m->to_name, m->body);
         ui_notify_text("入群申请", t);
         break;
     }

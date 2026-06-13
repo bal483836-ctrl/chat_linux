@@ -8,16 +8,21 @@ CREATE DATABASE IF NOT EXISTS chat_linux
     DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE chat_linux;
 
-/* 用户表 */
+/* 用户表.
+ * - 账号 = 100000 + id (id 自增, 不直接存储 account).
+ * - nickname 可重名, 仅用于显示.
+ * - avatar_color 0..9, 映射到固定调色板, 客户端绘制圆形头像. */
 CREATE TABLE IF NOT EXISTS users (
-    id          INT          NOT NULL AUTO_INCREMENT,
-    username    VARCHAR(32)  NOT NULL UNIQUE,
+    id            INT          NOT NULL AUTO_INCREMENT,
+    nickname      VARCHAR(32)  NOT NULL,
     /* 课程示例: 简单 sha1 即可, 生产环境应使用 bcrypt/argon2 */
-    password    VARCHAR(64)  NOT NULL,
-    online      TINYINT      NOT NULL DEFAULT 0,
-    created_at  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (id)
-) ENGINE=InnoDB;
+    password      VARCHAR(64)  NOT NULL,
+    avatar_color  TINYINT      NOT NULL DEFAULT 0,
+    online        TINYINT      NOT NULL DEFAULT 0,
+    created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX (nickname)
+) ENGINE=InnoDB AUTO_INCREMENT=1;
 
 /* 好友关系. status: 0 = 普通好友, 1 = 拉黑 */
 CREATE TABLE IF NOT EXISTS friends (

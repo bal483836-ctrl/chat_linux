@@ -46,32 +46,36 @@ void db_close(void) {
 }
 
 /* ===== 用户 ===== */
-int db_user_id(const char *user) {
-    char eu[128]; esc(user, eu, sizeof(eu));
-    char sql[256];
-    snprintf(sql, sizeof(sql), "SELECT id FROM users WHERE username='%s'", eu);
+int db_user_id_by_account(const char *account) {
+    int id = atoi(account) - ACCOUNT_BASE;
+    if (id <= 0) return -1;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT id FROM users WHERE id=%d", id);
     LOCK();
-    int id = -1;
+    int ok = -1;
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
-        MYSQL_ROW row;
-        if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);
+        if (r && mysql_fetch_row(r)) ok = id;
         if (r) mysql_free_result(r);
     }
     UNLOCK();
-    return id;
+    return ok;
 }
 
-int db_register(const char *user, const char *pass) {
+int db_register(const char *nickname, const char *pass) {
     char hash[64]; sha1_hex(pass, hash);
-    char eu[128]; esc(user, eu, sizeof(eu));
+    char en[128]; esc(nickname, en, sizeof(en));
+    int color = 0;
+    for (const char *p = nickname; *p; ++p) color = (color * 131 + (unsigned char)*p) & 0xFFFF;
+    color %= 10;
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "INSERT INTO users(username,password) VALUES('%s','%s')", eu, hash);
+        "INSERT INTO users(nickname,password,avatar_color) VALUES('%s','%s',%d)",
+        en, hash, color);
     LOCK();
     int rc;
     if (mysql_query(g_conn, sql) != 0) {
-        rc = (mysql_errno(g_conn) == 1062) ? -RS_USER_EXIST : -RS_FAIL;
+        rc = -RS_FAIL;
         UNLOCK(); return rc;
     }
     rc = (int)mysql_insert_id(g_conn);
@@ -79,12 +83,11 @@ int db_register(const char *user, const char *pass) {
     return rc;
 }
 
-int db_login(const char *user, const char *pass) {
+int db_login_by_id(int uid, const char *pass) {
     char hash[64]; sha1_hex(pass, hash);
-    char eu[128]; esc(user, eu, sizeof(eu));
-    char sql[512];
+    char sql[256];
     snprintf(sql, sizeof(sql),
-        "SELECT id FROM users WHERE username='%s' AND password='%s'", eu, hash);
+        "SELECT id FROM users WHERE id=%d AND password='%s'", uid, hash);
     LOCK();
     int id = -RS_AUTH_FAIL;
     if (!mysql_query(g_conn, sql)) {
@@ -95,6 +98,38 @@ int db_login(const char *user, const char *pass) {
     }
     UNLOCK();
     return id;
+}
+
+int db_get_nick(int uid, char *out, int outsz) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT nickname FROM users WHERE id=%d", uid);
+    LOCK();
+    int ok = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            strncpy(out, row[0], outsz - 1); out[outsz - 1] = 0; ok = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return ok;
+}
+
+int db_get_avatar_color(int uid) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT avatar_color FROM users WHERE id=%d", uid);
+    LOCK();
+    int c = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) c = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return c;
 }
 
 int db_set_online(int uid, int on) {
@@ -167,11 +202,12 @@ int db_is_black(int uid, int fid) {
     return yes;
 }
 
+/* 输出格式: "account\tnickname\tavatar_color\tonline\tblack\n" */
 int db_friend_list(int uid, char *out, int outsz,
                    int (*is_online)(int)) {
     char sql[256];
     snprintf(sql, sizeof(sql),
-        "SELECT u.id,u.username,f.status FROM friends f "
+        "SELECT u.id,u.nickname,u.avatar_color,f.status FROM friends f "
         "JOIN users u ON u.id=f.friend_id WHERE f.user_id=%d", uid);
     LOCK();
     out[0] = 0;
@@ -181,10 +217,12 @@ int db_friend_list(int uid, char *out, int outsz,
         MYSQL_ROW row;
         while (r && (row = mysql_fetch_row(r))) {
             int fid    = atoi(row[0]);
-            int black  = atoi(row[2]);
+            int color  = atoi(row[2]);
+            int black  = atoi(row[3]);
             int online = is_online ? is_online(fid) : 0;
             int n = snprintf(out + used, outsz - used,
-                             "%s\t%d\t%d\n", row[1], online, black);
+                             "%d\t%s\t%d\t%d\t%d\n",
+                             ACCOUNT_BASE + fid, row[1], color, online, black);
             if (n <= 0 || n >= outsz - used) break;
             used += n;
         }
@@ -305,7 +343,7 @@ static int fetch_rows(const char *sql, OfflineRow *rows, int max) {
 int db_offline_take(int uid, OfflineRow *rows, int max) {
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.username "
+        "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.nickname "
         "FROM offline_msg o JOIN messages m ON m.id=o.message_id "
         "JOIN users u ON u.id=m.from_id "
         "WHERE o.user_id=%d ORDER BY m.id ASC LIMIT %d", uid, max);
@@ -320,7 +358,7 @@ int db_offline_take(int uid, OfflineRow *rows, int max) {
 int db_history_priv(int a, int b, OfflineRow *rows, int max) {
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.username "
+        "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.nickname "
         "FROM messages m JOIN users u ON u.id=m.from_id "
         "WHERE m.msg_type=0 AND ((m.from_id=%d AND m.target_id=%d) OR (m.from_id=%d AND m.target_id=%d)) "
         "ORDER BY m.id ASC LIMIT %d", a, b, b, a, max);
@@ -330,7 +368,7 @@ int db_history_priv(int a, int b, OfflineRow *rows, int max) {
 int db_history_group(int gid, OfflineRow *rows, int max) {
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.username "
+        "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.nickname "
         "FROM messages m JOIN users u ON u.id=m.from_id "
         "WHERE m.msg_type=1 AND m.target_id=%d ORDER BY m.id ASC LIMIT %d", gid, max);
     return fetch_rows(sql, rows, max);
@@ -393,10 +431,11 @@ int db_freq_set(int reqid, int status) {
     return rc == 0 ? 0 : -1;
 }
 
+/* "reqid\tfrom_account\tfrom_nick\tavatar_color\ttime\thello\n" */
 int db_freq_list(int to_id, char *out, int outsz) {
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "SELECT fr.id,u.username,fr.created_at,fr.hello "
+        "SELECT fr.id,u.id,u.nickname,u.avatar_color,fr.created_at,fr.hello "
         "FROM friend_requests fr JOIN users u ON u.id=fr.from_id "
         "WHERE fr.to_id=%d AND fr.status=0 ORDER BY fr.id DESC", to_id);
     LOCK();
@@ -405,8 +444,10 @@ int db_freq_list(int to_id, char *out, int outsz) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
         while (r && (row = mysql_fetch_row(r))) {
-            int n = snprintf(out + used, outsz - used, "%s\t%s\t%s\t%s\n",
-                             row[0], row[1], row[2], row[3] ? row[3] : "");
+            int n = snprintf(out + used, outsz - used,
+                             "%s\t%d\t%s\t%s\t%s\t%s\n",
+                             row[0], atoi(row[1]) + ACCOUNT_BASE,
+                             row[2], row[3], row[4], row[5] ? row[5] : "");
             if (n <= 0 || n >= outsz - used) break;
             used += n;
         }
@@ -475,7 +516,7 @@ int db_greq_set(int reqid, int status) {
 int db_greq_list_for_owner(int owner_id, char *out, int outsz) {
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "SELECT gr.id,g.id,g.name,u.username,gr.created_at,gr.hello "
+        "SELECT gr.id,g.id,g.name,u.nickname,gr.created_at,gr.hello "
         "FROM group_join_requests gr "
         "JOIN chat_groups g ON g.id=gr.group_id "
         "JOIN users u ON u.id=gr.user_id "
@@ -546,23 +587,38 @@ int db_group_member_count(int gid) {
     return n;
 }
 
-/* ===== 搜索 ===== */
+/* 搜索: 关键字若是 6+ 位数字解释为账号精确匹配, 否则按昵称模糊匹配.
+ * 输出格式: "account\tnickname\tavatar_color\tonline\n" */
 int db_user_search(const char *q, char *out, int outsz,
                    int (*is_online)(int)) {
     char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
+    int as_account = 0;
+    if (strlen(q) >= 6) {
+        as_account = 1;
+        for (const char *p = q; *p; ++p) if (*p < '0' || *p > '9') { as_account = 0; break; }
+    }
     char sql[512];
-    snprintf(sql, sizeof(sql),
-        "SELECT id,username FROM users WHERE username LIKE '%%%s%%' LIMIT 50", eq);
+    if (as_account) {
+        int id = atoi(q) - ACCOUNT_BASE;
+        snprintf(sql, sizeof(sql),
+            "SELECT id,nickname,avatar_color FROM users WHERE id=%d", id);
+    } else {
+        snprintf(sql, sizeof(sql),
+            "SELECT id,nickname,avatar_color FROM users "
+            "WHERE nickname LIKE '%%%s%%' LIMIT 50", eq);
+    }
     LOCK();
     out[0] = 0; int used = 0;
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
         while (r && (row = mysql_fetch_row(r))) {
-            int uid = atoi(row[0]);
+            int uid    = atoi(row[0]);
+            int color  = atoi(row[2]);
             int online = is_online ? is_online(uid) : 0;
             int n = snprintf(out + used, outsz - used,
-                             "%s\t%d\n", row[1], online);
+                             "%d\t%s\t%d\t%d\n",
+                             ACCOUNT_BASE + uid, row[1], color, online);
             if (n <= 0 || n >= outsz - used) break;
             used += n;
         }
@@ -576,7 +632,7 @@ int db_group_search(const char *q, char *out, int outsz) {
     char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
     char sql[512];
     snprintf(sql, sizeof(sql),
-        "SELECT g.id,g.name,u.username,COUNT(m.user_id) "
+        "SELECT g.id,g.name,u.nickname,COUNT(m.user_id) "
         "FROM chat_groups g "
         "JOIN users u ON u.id=g.owner_id "
         "LEFT JOIN group_members m ON m.group_id=g.id "

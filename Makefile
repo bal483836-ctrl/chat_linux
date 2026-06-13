@@ -26,7 +26,7 @@ SRV_LD  := -lpthread -lmysqlclient -lssl -lcrypto
 # --- client ---
 CLI_SRC := $(SRC_COMMON) client/main.c client/net.c client/ui.c
 CLI_PKG := $(shell pkg-config --cflags --libs gtk+-3.0)
-CLI_LD  := -lpthread $(CLI_PKG)
+CLI_LD  := -lpthread -lm $(CLI_PKG)
 
 .PHONY: all server client clean
 all: server client
