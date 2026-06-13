@@ -115,6 +115,31 @@ int main(int argc, char **argv) {
         else if (!strcmp(cmd, "GLIST"))   cmd_text(MSG_GROUP_LIST, NULL, 0, NULL);
         else if (!strcmp(cmd, "HISTP"))   cmd_text(MSG_HISTORY_PRIV, a, 0, NULL);
         else if (!strcmp(cmd, "HISTG")) { gid = atoi(a); cmd_text(MSG_HISTORY_GROUP, NULL, gid, NULL); }
+        else if (!strcmp(cmd, "FREQ"))    cmd_text(MSG_FRIEND_REQ, a, 0, rest);
+        else if (!strcmp(cmd, "FRACC"))   { /* reqid 在 a, 同意 */
+            Message m; memset(&m,0,sizeof(m));
+            m.type = MSG_FRIEND_REQ_REPLY; m.status = atoi(a); m.group_id = 1;
+            send_all(&m);
+        }
+        else if (!strcmp(cmd, "FRREJ"))   {
+            Message m; memset(&m,0,sizeof(m));
+            m.type = MSG_FRIEND_REQ_REPLY; m.status = atoi(a); m.group_id = 0;
+            send_all(&m);
+        }
+        else if (!strcmp(cmd, "FRLIST")) cmd_text(MSG_FRIEND_REQ_LIST, NULL, 0, NULL);
+        else if (!strcmp(cmd, "GREQ"))   { gid = atoi(a); cmd_text(MSG_GROUP_JOIN_REQ, NULL, gid, rest); }
+        else if (!strcmp(cmd, "GRACC"))  {
+            Message m; memset(&m,0,sizeof(m));
+            m.type = MSG_GROUP_JOIN_REPLY; m.status = atoi(a); m.group_id = 1;
+            send_all(&m);
+        }
+        else if (!strcmp(cmd, "GRREJ"))  {
+            Message m; memset(&m,0,sizeof(m));
+            m.type = MSG_GROUP_JOIN_REPLY; m.status = atoi(a); m.group_id = 0;
+            send_all(&m);
+        }
+        else if (!strcmp(cmd, "USEARCH")) cmd_text(MSG_USER_SEARCH, NULL, 0, a);
+        else if (!strcmp(cmd, "GSEARCH")) cmd_text(MSG_GROUP_SEARCH, NULL, 0, a);
         else if (!strcmp(cmd, "QUIT"))    break;
 
         usleep(150000);   /* 给服务器/接收线程一点时间打印应答 */

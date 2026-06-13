@@ -99,6 +99,38 @@ static gboolean dispatch_in_main(gpointer data) {
         ui_append_chat("[文件]", m->timestamp, s);
         break;
     }
+
+    /* ===== 申请流程相关 ===== */
+    case MSG_FRIEND_REQ_NOTIFY: {
+        ui_add_request(0, (int)m->status, m->from_name, NULL, m->body, 0);
+        char t[256];
+        snprintf(t, sizeof(t), "%s 请求加你为好友\n附言: %s\n请到左侧 通知 页处理",
+                 m->from_name, m->body);
+        ui_notify_text("好友申请", t);
+        break;
+    }
+    case MSG_GROUP_JOIN_NOTIFY: {
+        ui_add_request(1, (int)m->status, m->from_name, m->to_name, m->body, (int)m->group_id);
+        char t[256];
+        snprintf(t, sizeof(t), "%s 申请加入群【%s】\n附言: %s\n请到左侧 通知 页处理",
+                 m->from_name, m->to_name, m->body);
+        ui_notify_text("入群申请", t);
+        break;
+    }
+    case MSG_FRIEND_REQ_LIST:
+        ui_refresh_requests(0, m->body);
+        break;
+    case MSG_GROUP_JOIN_REQ_LIST:
+        ui_refresh_requests(1, m->body);
+        break;
+
+    case MSG_USER_SEARCH:
+        ui_search_result(1, m->body);
+        break;
+    case MSG_GROUP_SEARCH:
+        ui_search_result(0, m->body);
+        break;
+
     default: break;
     }
     g_free(p);

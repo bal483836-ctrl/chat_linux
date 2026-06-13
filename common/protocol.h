@@ -22,16 +22,24 @@ enum MsgType {
     MSG_PRIVATE_CHAT   = 10,  /* 私聊: to_name=对方, body=文本               */
     MSG_GROUP_CHAT     = 11,  /* 群聊: group_id=群号, body=文本              */
 
-    MSG_FRIEND_ADD     = 20,
+    MSG_FRIEND_ADD     = 20,  /* (兼容) 直接互加, 通常被 FRIEND_REQ 取代 */
     MSG_FRIEND_DEL     = 21,
     MSG_FRIEND_LIST    = 22,  /* body 多行: "name\tonline\tblack"            */
     MSG_BLACK_ADD      = 23,
     MSG_BLACK_DEL      = 24,
+    MSG_FRIEND_REQ        = 25,  /* 客户端->服务器: to_name=对方, body=招呼   */
+    MSG_FRIEND_REQ_NOTIFY = 26,  /* 服务器->目标: status=reqid, from_name     */
+    MSG_FRIEND_REQ_REPLY  = 27,  /* 目标->服务器: status=reqid, group_id=1/0  */
+    MSG_FRIEND_REQ_LIST   = 28,  /* 拉取待处理: "reqid\tfrom\ttime\thello"    */
 
     MSG_GROUP_CREATE   = 30,  /* body=群名                                   */
-    MSG_GROUP_JOIN     = 31,  /* group_id                                    */
+    MSG_GROUP_JOIN     = 31,  /* (兼容) 直接加群                              */
     MSG_GROUP_LIST     = 32,  /* body 多行: "gid\tname\towner"               */
     MSG_GROUP_MEMBERS  = 33,
+    MSG_GROUP_JOIN_REQ        = 34,  /* group_id, body=招呼                   */
+    MSG_GROUP_JOIN_NOTIFY     = 35,  /* 服务器->群主: status=reqid, group_id  */
+    MSG_GROUP_JOIN_REPLY      = 36,  /* 群主->服务器: status=reqid, group_id=1/0 */
+    MSG_GROUP_JOIN_REQ_LIST   = 37,  /* "reqid\tgid\tgname\tfrom\ttime"       */
 
     MSG_HISTORY_PRIV   = 40,  /* 拉取私聊历史 to_name=对方                   */
     MSG_HISTORY_GROUP  = 41,  /* 拉取群聊历史 group_id                       */
@@ -43,6 +51,9 @@ enum MsgType {
 
     MSG_NOTIFY_ONLINE  = 60,  /* 服务器->客户端: 好友上线                    */
     MSG_NOTIFY_OFFLINE = 61,
+
+    MSG_USER_SEARCH    = 70,  /* body=关键字; 响应: "name\tonline\n..."      */
+    MSG_GROUP_SEARCH   = 71,  /* body=关键字; 响应: "gid\tname\towner\tcnt\n"*/
 };
 
 /* 应答状态码.

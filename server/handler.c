@@ -139,6 +139,15 @@ static void on_login_success(Session *s) {
     gl.type = MSG_GROUP_LIST;
     gl.body_len = db_group_list_for_user(s->uid, gl.body, MAX_BODY_LEN);
     send_msg(s->fd, &gl);
+    /* 推送待处理好友/入群申请 */
+    Message fr; memset(&fr, 0, sizeof(fr));
+    fr.type = MSG_FRIEND_REQ_LIST;
+    fr.body_len = db_freq_list(s->uid, fr.body, MAX_BODY_LEN);
+    send_msg(s->fd, &fr);
+    Message gr; memset(&gr, 0, sizeof(gr));
+    gr.type = MSG_GROUP_JOIN_REQ_LIST;
+    gr.body_len = db_greq_list_for_owner(s->uid, gr.body, MAX_BODY_LEN);
+    send_msg(s->fd, &gr);
     /* 取离线消息 */
     OfflineRow rows[64];
     int n = db_offline_take(s->uid, rows, 64);
@@ -260,6 +269,146 @@ void *client_thread(void *arg) {
             Message f = m;
             strncpy(f.from_name, sess.name, MAX_NAME_LEN - 1);
             online_push(to, &f);
+            break;
+        }
+
+        /* ===== 好友申请流程 ===== */
+        case MSG_FRIEND_REQ: {
+            int to = db_user_id(m.to_name);
+            if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
+            if (to == sess.uid) { resp(fd, RS_FAIL, "不能加自己为好友"); break; }
+            if (db_is_friend(sess.uid, to)) {
+                resp(fd, RS_FAIL, "已经是好友"); break;
+            }
+            int reqid = db_freq_put(sess.uid, to, m.body);
+            if (reqid < 0) { resp(fd, RS_FAIL, "申请失败"); break; }
+            /* 通知目标 */
+            Message n; memset(&n, 0, sizeof(n));
+            n.type   = MSG_FRIEND_REQ_NOTIFY;
+            n.status = reqid;
+            strncpy(n.from_name, sess.name, MAX_NAME_LEN - 1);
+            strncpy(n.body, m.body, MAX_BODY_LEN - 1);
+            n.body_len = strlen(n.body);
+            fill_timestamp(n.timestamp, sizeof(n.timestamp));
+            online_push(to, &n);    /* 不在线下次登录时拉列表 */
+            resp(fd, RS_OK, "已发送好友申请");
+            break;
+        }
+        case MSG_FRIEND_REQ_REPLY: {
+            int reqid = (int)m.status;
+            int accept = m.group_id == 1;
+            int from_id = -1, to_id = -1;
+            if (db_freq_info(reqid, &from_id, &to_id) < 0 || to_id != sess.uid) {
+                resp(fd, RS_FAIL, "无效申请"); break;
+            }
+            db_freq_set(reqid, accept ? 1 : 2);
+            if (accept) {
+                db_friend_add(from_id, to_id);
+                /* 双方都刷一下好友列表 */
+                Message fl; memset(&fl, 0, sizeof(fl));
+                fl.type = MSG_FRIEND_LIST;
+                fl.body_len = db_friend_list(sess.uid, fl.body, MAX_BODY_LEN, is_user_online);
+                send_msg(fd, &fl);
+                /* 通知申请方 */
+                if (online_get_fd_by_id(from_id) >= 0) {
+                    Message fl2; memset(&fl2, 0, sizeof(fl2));
+                    fl2.type = MSG_FRIEND_LIST;
+                    fl2.body_len = db_friend_list(from_id, fl2.body, MAX_BODY_LEN, is_user_online);
+                    online_push(from_id, &fl2);
+                    /* 也推一条 RESPONSE 提示 */
+                    Message rr; memset(&rr, 0, sizeof(rr));
+                    rr.type = MSG_RESPONSE; rr.status = RS_OK;
+                    snprintf(rr.body, sizeof(rr.body),
+                        "%s 同意了你的好友申请", sess.name);
+                    rr.body_len = strlen(rr.body);
+                    online_push(from_id, &rr);
+                }
+            }
+            resp(fd, RS_OK, accept ? "已同意" : "已拒绝");
+            break;
+        }
+        case MSG_FRIEND_REQ_LIST: {
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_FRIEND_REQ_LIST;
+            o.body_len = db_freq_list(sess.uid, o.body, MAX_BODY_LEN);
+            send_msg(fd, &o);
+            break;
+        }
+
+        /* ===== 入群申请流程 ===== */
+        case MSG_GROUP_JOIN_REQ: {
+            int gid = m.group_id;
+            int owner = db_group_owner(gid);
+            if (owner < 0) { resp(fd, RS_GROUP_NOT_FOUND, "群不存在"); break; }
+            if (owner == sess.uid) { resp(fd, RS_FAIL, "你是群主, 无需申请"); break; }
+            int reqid = db_greq_put(gid, sess.uid, m.body);
+            if (reqid < 0) { resp(fd, RS_FAIL, "申请失败"); break; }
+            /* 通知群主 */
+            Message n; memset(&n, 0, sizeof(n));
+            n.type     = MSG_GROUP_JOIN_NOTIFY;
+            n.status   = reqid;
+            n.group_id = gid;
+            strncpy(n.from_name, sess.name, MAX_NAME_LEN - 1);
+            db_group_name(gid, n.to_name, MAX_NAME_LEN);
+            strncpy(n.body, m.body, MAX_BODY_LEN - 1);
+            n.body_len = strlen(n.body);
+            fill_timestamp(n.timestamp, sizeof(n.timestamp));
+            online_push(owner, &n);
+            resp(fd, RS_OK, "已发送入群申请, 等待群主审批");
+            break;
+        }
+        case MSG_GROUP_JOIN_REPLY: {
+            int reqid = (int)m.status;
+            int accept = m.group_id == 1;
+            int gid = -1, applier = -1;
+            if (db_greq_info(reqid, &gid, &applier) < 0) {
+                resp(fd, RS_FAIL, "无效申请"); break;
+            }
+            if (db_group_owner(gid) != sess.uid) {
+                resp(fd, RS_FAIL, "只有群主可审批"); break;
+            }
+            db_greq_set(reqid, accept ? 1 : 2);
+            if (accept) {
+                db_group_join(gid, applier);
+                /* 通知申请方刷新群列表 */
+                if (online_get_fd_by_id(applier) >= 0) {
+                    Message gl; memset(&gl, 0, sizeof(gl));
+                    gl.type = MSG_GROUP_LIST;
+                    gl.body_len = db_group_list_for_user(applier, gl.body, MAX_BODY_LEN);
+                    online_push(applier, &gl);
+                    Message rr; memset(&rr, 0, sizeof(rr));
+                    rr.type = MSG_RESPONSE; rr.status = RS_OK;
+                    char gname[64] = {0}; db_group_name(gid, gname, sizeof(gname));
+                    snprintf(rr.body, sizeof(rr.body),
+                        "群主同意你加入群【%s】", gname);
+                    rr.body_len = strlen(rr.body);
+                    online_push(applier, &rr);
+                }
+            }
+            resp(fd, RS_OK, accept ? "已同意入群" : "已拒绝");
+            break;
+        }
+        case MSG_GROUP_JOIN_REQ_LIST: {
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_GROUP_JOIN_REQ_LIST;
+            o.body_len = db_greq_list_for_owner(sess.uid, o.body, MAX_BODY_LEN);
+            send_msg(fd, &o);
+            break;
+        }
+
+        /* ===== 搜索 ===== */
+        case MSG_USER_SEARCH: {
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_USER_SEARCH;
+            o.body_len = db_user_search(m.body, o.body, MAX_BODY_LEN, is_user_online);
+            send_msg(fd, &o);
+            break;
+        }
+        case MSG_GROUP_SEARCH: {
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_GROUP_SEARCH;
+            o.body_len = db_group_search(m.body, o.body, MAX_BODY_LEN);
+            send_msg(fd, &o);
             break;
         }
 

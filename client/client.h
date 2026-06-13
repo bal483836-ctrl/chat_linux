@@ -22,8 +22,14 @@ typedef struct {
     GtkWidget *group_view;
     GtkListStore *group_store;  /* gid, name */
     GtkWidget *chat_header;
+    GtkWidget *add_btn;         /* 右上角 "+" 按钮 */
     GtkTextBuffer *chat_buf;
     GtkWidget *input_entry;
+
+    /* 通知/申请 (好友申请 + 群入群申请合一显示) */
+    GtkWidget    *req_view;
+    GtkListStore *req_store;    /* kind(int) reqid(int) text(str) hello(str) */
+    GtkWidget    *req_count_lbl;/* 用于 tab label 上的小红点数字 */
 
     /* 当前聊天对象 */
     int       peer_is_group;   /* 0=私聊 1=群聊 */
@@ -50,5 +56,9 @@ void show_main(void);
 void ui_append_chat(const char *who, const char *time, const char *text);
 void ui_refresh_friends(const char *body);
 void ui_refresh_groups(const char *body);
+void ui_refresh_requests(int kind, const char *body); /* kind: 0=好友申请,1=入群申请 */
+void ui_add_request(int kind, int reqid, const char *who, const char *gname, const char *hello, int gid);
+void ui_notify_text(const char *title, const char *text);
+void ui_search_result(int is_user, const char *body);
 
 #endif

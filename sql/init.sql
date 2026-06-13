@@ -71,3 +71,31 @@ CREATE TABLE IF NOT EXISTS offline_msg (
     FOREIGN KEY (user_id)    REFERENCES users(id)    ON DELETE CASCADE,
     FOREIGN KEY (message_id) REFERENCES messages(id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+/* 好友申请. status: 0=待处理 1=已同意 2=已拒绝 */
+CREATE TABLE IF NOT EXISTS friend_requests (
+    id          INT NOT NULL AUTO_INCREMENT,
+    from_id     INT NOT NULL,
+    to_id       INT NOT NULL,
+    hello       VARCHAR(256) DEFAULT '',
+    status      TINYINT NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX (to_id, status),
+    FOREIGN KEY (from_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (to_id)   REFERENCES users(id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
+/* 入群申请. 由群主审批 */
+CREATE TABLE IF NOT EXISTS group_join_requests (
+    id          INT NOT NULL AUTO_INCREMENT,
+    group_id    INT NOT NULL,
+    user_id     INT NOT NULL,
+    hello       VARCHAR(256) DEFAULT '',
+    status      TINYINT NOT NULL DEFAULT 0,
+    created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    INDEX (group_id, status),
+    FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id)  REFERENCES users(id)       ON DELETE CASCADE
+) ENGINE=InnoDB;

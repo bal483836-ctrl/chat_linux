@@ -335,3 +335,267 @@ int db_history_group(int gid, OfflineRow *rows, int max) {
         "WHERE m.msg_type=1 AND m.target_id=%d ORDER BY m.id ASC LIMIT %d", gid, max);
     return fetch_rows(sql, rows, max);
 }
+
+/* ===== 好友申请 ===== */
+int db_freq_put(int from_id, int to_id, const char *hello) {
+    char eh[512] = "";
+    if (hello && *hello) mysql_real_escape_string(g_conn, eh, hello, strlen(hello));
+    char sql[1024];
+    LOCK();
+    /* 已存在 pending → 复用, 更新 hello */
+    snprintf(sql, sizeof(sql),
+        "SELECT id FROM friend_requests WHERE from_id=%d AND to_id=%d AND status=0",
+        from_id, to_id);
+    int reqid = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) reqid = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    if (reqid > 0) {
+        snprintf(sql, sizeof(sql),
+            "UPDATE friend_requests SET hello='%s' WHERE id=%d", eh, reqid);
+        mysql_query(g_conn, sql);
+    } else {
+        snprintf(sql, sizeof(sql),
+            "INSERT INTO friend_requests(from_id,to_id,hello,status) VALUES(%d,%d,'%s',0)",
+            from_id, to_id, eh);
+        if (mysql_query(g_conn, sql) == 0) reqid = (int)mysql_insert_id(g_conn);
+    }
+    UNLOCK();
+    return reqid;
+}
+
+int db_freq_info(int reqid, int *from_id, int *to_id) {
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "SELECT from_id,to_id FROM friend_requests WHERE id=%d", reqid);
+    LOCK();
+    int ok = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            *from_id = atoi(row[0]); *to_id = atoi(row[1]); ok = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return ok;
+}
+
+int db_freq_set(int reqid, int status) {
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "UPDATE friend_requests SET status=%d WHERE id=%d", status, reqid);
+    LOCK(); int rc = mysql_query(g_conn, sql); UNLOCK();
+    return rc == 0 ? 0 : -1;
+}
+
+int db_freq_list(int to_id, char *out, int outsz) {
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "SELECT fr.id,u.username,fr.created_at,fr.hello "
+        "FROM friend_requests fr JOIN users u ON u.id=fr.from_id "
+        "WHERE fr.to_id=%d AND fr.status=0 ORDER BY fr.id DESC", to_id);
+    LOCK();
+    out[0] = 0; int used = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        while (r && (row = mysql_fetch_row(r))) {
+            int n = snprintf(out + used, outsz - used, "%s\t%s\t%s\t%s\n",
+                             row[0], row[1], row[2], row[3] ? row[3] : "");
+            if (n <= 0 || n >= outsz - used) break;
+            used += n;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return used;
+}
+
+/* ===== 入群申请 ===== */
+int db_greq_put(int gid, int user_id, const char *hello) {
+    char eh[512] = "";
+    if (hello && *hello) mysql_real_escape_string(g_conn, eh, hello, strlen(hello));
+    char sql[1024];
+    LOCK();
+    snprintf(sql, sizeof(sql),
+        "SELECT id FROM group_join_requests WHERE group_id=%d AND user_id=%d AND status=0",
+        gid, user_id);
+    int reqid = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) reqid = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    if (reqid > 0) {
+        snprintf(sql, sizeof(sql),
+            "UPDATE group_join_requests SET hello='%s' WHERE id=%d", eh, reqid);
+        mysql_query(g_conn, sql);
+    } else {
+        snprintf(sql, sizeof(sql),
+            "INSERT INTO group_join_requests(group_id,user_id,hello,status) VALUES(%d,%d,'%s',0)",
+            gid, user_id, eh);
+        if (mysql_query(g_conn, sql) == 0) reqid = (int)mysql_insert_id(g_conn);
+    }
+    UNLOCK();
+    return reqid;
+}
+
+int db_greq_info(int reqid, int *gid, int *user_id) {
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "SELECT group_id,user_id FROM group_join_requests WHERE id=%d", reqid);
+    LOCK();
+    int ok = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            *gid = atoi(row[0]); *user_id = atoi(row[1]); ok = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return ok;
+}
+
+int db_greq_set(int reqid, int status) {
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "UPDATE group_join_requests SET status=%d WHERE id=%d", status, reqid);
+    LOCK(); int rc = mysql_query(g_conn, sql); UNLOCK();
+    return rc == 0 ? 0 : -1;
+}
+
+int db_greq_list_for_owner(int owner_id, char *out, int outsz) {
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "SELECT gr.id,g.id,g.name,u.username,gr.created_at,gr.hello "
+        "FROM group_join_requests gr "
+        "JOIN chat_groups g ON g.id=gr.group_id "
+        "JOIN users u ON u.id=gr.user_id "
+        "WHERE g.owner_id=%d AND gr.status=0 ORDER BY gr.id DESC", owner_id);
+    LOCK();
+    out[0] = 0; int used = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        while (r && (row = mysql_fetch_row(r))) {
+            int n = snprintf(out + used, outsz - used,
+                "%s\t%s\t%s\t%s\t%s\t%s\n",
+                row[0], row[1], row[2], row[3], row[4], row[5] ? row[5] : "");
+            if (n <= 0 || n >= outsz - used) break;
+            used += n;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return used;
+}
+
+int db_group_owner(int gid) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT owner_id FROM chat_groups WHERE id=%d", gid);
+    LOCK();
+    int id = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return id;
+}
+
+int db_group_name(int gid, char *out, int outsz) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT name FROM chat_groups WHERE id=%d", gid);
+    LOCK();
+    int ok = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            strncpy(out, row[0], outsz - 1); out[outsz - 1] = 0; ok = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return ok;
+}
+
+int db_group_member_count(int gid) {
+    char sql[128];
+    snprintf(sql, sizeof(sql),
+        "SELECT COUNT(*) FROM group_members WHERE group_id=%d", gid);
+    LOCK();
+    int n = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) n = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return n;
+}
+
+/* ===== 搜索 ===== */
+int db_user_search(const char *q, char *out, int outsz,
+                   int (*is_online)(int)) {
+    char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "SELECT id,username FROM users WHERE username LIKE '%%%s%%' LIMIT 50", eq);
+    LOCK();
+    out[0] = 0; int used = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        while (r && (row = mysql_fetch_row(r))) {
+            int uid = atoi(row[0]);
+            int online = is_online ? is_online(uid) : 0;
+            int n = snprintf(out + used, outsz - used,
+                             "%s\t%d\n", row[1], online);
+            if (n <= 0 || n >= outsz - used) break;
+            used += n;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return used;
+}
+
+int db_group_search(const char *q, char *out, int outsz) {
+    char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
+    char sql[512];
+    snprintf(sql, sizeof(sql),
+        "SELECT g.id,g.name,u.username,COUNT(m.user_id) "
+        "FROM chat_groups g "
+        "JOIN users u ON u.id=g.owner_id "
+        "LEFT JOIN group_members m ON m.group_id=g.id "
+        "WHERE g.name LIKE '%%%s%%' "
+        "GROUP BY g.id LIMIT 50", eq);
+    LOCK();
+    out[0] = 0; int used = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        while (r && (row = mysql_fetch_row(r))) {
+            int n = snprintf(out + used, outsz - used,
+                             "%s\t%s\t%s\t%s\n",
+                             row[0], row[1], row[2], row[3]);
+            if (n <= 0 || n >= outsz - used) break;
+            used += n;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return used;
+}

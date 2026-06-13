@@ -47,4 +47,34 @@ int  db_offline_take(int user_id, OfflineRow *rows, int max);
 int  db_history_priv (int uid_a, int uid_b, OfflineRow *rows, int max);
 int  db_history_group(int gid,             OfflineRow *rows, int max);
 
+/* ===== 好友申请 ===== */
+/* 插入待处理申请, 返回 reqid; 若已有同向 pending 直接复用. */
+int  db_freq_put   (int from_id, int to_id, const char *hello);
+/* 取出申请的元信息(填到 *from_id, *to_id) */
+int  db_freq_info  (int reqid, int *from_id, int *to_id);
+/* 标记 status; 1=同意, 2=拒绝 */
+int  db_freq_set   (int reqid, int status);
+/* 拉取某用户的待处理申请: 每行 "reqid\tfrom_name\ttime\thello" */
+int  db_freq_list  (int to_id, char *out, int outsz);
+
+/* ===== 入群申请 ===== */
+int  db_greq_put   (int gid, int user_id, const char *hello);
+int  db_greq_info  (int reqid, int *gid, int *user_id);
+int  db_greq_set   (int reqid, int status);
+/* 当前用户作为群主, 列出所有自己拥有的群的待处理入群申请:
+ * "reqid\tgid\tgname\tfrom_name\ttime\thello" */
+int  db_greq_list_for_owner(int owner_id, char *out, int outsz);
+
+/* 群主 id */
+int  db_group_owner(int gid);
+int  db_group_name (int gid, char *out, int outsz);
+/* 群成员个数 */
+int  db_group_member_count(int gid);
+
+/* ===== 搜索 ===== */
+/* 模糊搜用户/群, 返回行数. 用户行: "name\tonline\n"; 群行: "gid\tname\towner\tcnt\n" */
+int  db_user_search (const char *q, char *out, int outsz,
+                     int (*is_online)(int));
+int  db_group_search(const char *q, char *out, int outsz);
+
 #endif
