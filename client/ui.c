@@ -37,6 +37,7 @@ static const struct { double r, g, b; } AVATAR_COLORS[10] = {
 /* ---- 前向声明 ---- */
 static void on_main_destroy   (GtkWidget *, gpointer);
 static void launch_sendfile_thread(const char *path, const char *peer_acc);
+static void on_chat_vadj_changed(GtkAdjustment *a, gpointer ud);
 static void do_login_clicked(GtkButton *, gpointer);
 static void open_register_win(GtkButton *, gpointer);
 static void do_register_confirm(GtkButton *, gpointer);
@@ -345,7 +346,37 @@ static void apply_css(void) {
     "    font-weight: bold;\n"
     "}\n"
     "textview text { background-color: #f8fafc; }\n"
-    "textview { padding: 4px; }\n";
+    "textview { padding: 4px; }\n"
+    /* ===== 聊天气泡 (功能 7 连续聊天的视觉骨架) ===== */
+    ".chat-area { background-color: #f3f6fb; }\n"
+    ".chat-area list, .chat-area row { background-color: transparent; }\n"
+    ".chat-area row:selected { background-color: transparent; }\n"
+    ".bubble-me {\n"
+    "    background: linear-gradient(180deg, #38bdf8, #0ea5e9);\n"
+    "    color: white;\n"
+    "    border-radius: 14px;\n"
+    "    padding: 9px 14px;\n"
+    "}\n"
+    ".bubble-other {\n"
+    "    background-color: #ffffff;\n"
+    "    color: #1f2937;\n"
+    "    border: 1px solid #e2e8f0;\n"
+    "    border-radius: 14px;\n"
+    "    padding: 9px 14px;\n"
+    "}\n"
+    ".bubble-system {\n"
+    "    color: #94a3b8;\n"
+    "    background-color: rgba(148,163,184,0.10);\n"
+    "    border-radius: 10px;\n"
+    "    padding: 4px 10px;\n"
+    "    font-size: 9pt;\n"
+    "}\n"
+    ".chat-meta { color: #94a3b8; font-size: 8pt; }\n"
+    /* 让聊天面板内 ListBox 选择行边框消失 */
+    ".chat-empty {\n"
+    "    color: #94a3b8;\n"
+    "    font-size: 11pt;\n"
+    "}\n";
 
     GtkCssProvider *p = gtk_css_provider_new();
     GError *err = NULL;
@@ -710,7 +741,7 @@ static GtkWidget *make_friend_row(const char *acc, const char *nick, int color,
     GtkWidget *l1 = gtk_label_new(NULL);
     char buf[128];
     snprintf(buf, sizeof(buf),
-        "<span class='im-nick' weight='bold' size='medium'>%s</span>%s",
+        "<span weight='bold' size='medium'>%s</span>%s",
         nick, black ? " <span color='#ef4444' size='small'>[黑]</span>" : "");
     gtk_label_set_markup(GTK_LABEL(l1), buf);
     gtk_label_set_xalign(GTK_LABEL(l1), 0.0);
@@ -936,15 +967,21 @@ void show_main(void) {
     /* + 按钮已经挪到左侧自己头像旁边了, 这里不再创建. */
     gtk_box_pack_start(GTK_BOX(right), hdr, FALSE, FALSE, 0);
 
-    GtkWidget *tv = gtk_text_view_new();
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(tv), FALSE);
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(tv), GTK_WRAP_WORD_CHAR);
-    gtk_text_view_set_left_margin (GTK_TEXT_VIEW(tv), 10);
-    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(tv), 10);
-    gtk_text_view_set_top_margin  (GTK_TEXT_VIEW(tv), 10);
-    CTX.chat_buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(tv));
+    /* ===== 聊天消息区 =====
+     * 用 GtkListBox 装气泡行 (而不是 TextView 一坨纯文本).
+     * - 选择模式 NONE: 行不会有选中态边框
+     * - 行内容由 ui_append_bubble / ui_append_system 动态生成
+     * - 用 chat_vadj 的 "changed" 信号在内容变更后自动滚到底 */
+    CTX.chat_list = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(CTX.chat_list), GTK_SELECTION_NONE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(CTX.chat_list), "chat-area");
     GtkWidget *sv = gtk_scrolled_window_new(NULL, NULL);
-    gtk_container_add(GTK_CONTAINER(sv), tv);
+    gtk_style_context_add_class(gtk_widget_get_style_context(sv), "chat-area");
+    gtk_container_add(GTK_CONTAINER(sv), CTX.chat_list);
+    CTX.chat_vadj = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(sv));
+    /* 自动滚到底: vadj 内容上界变化时, 把 value 推到 upper-page_size.
+     * (回调函数 on_chat_vadj_changed 写在文件下方) */
+    g_signal_connect(CTX.chat_vadj, "changed", G_CALLBACK(on_chat_vadj_changed), NULL);
     gtk_box_pack_start(GTK_BOX(right), sv, TRUE, TRUE, 0);
 
     GtkWidget *ibox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
@@ -1017,7 +1054,7 @@ static void switch_chat_target(int is_group, const char *acc_or_gname,
             nick, acc_or_gname);
     gtk_label_set_markup(GTK_LABEL(CTX.chat_header), hdr);
 
-    gtk_text_buffer_set_text(CTX.chat_buf, "", -1);
+    ui_chat_clear();
     Message hm; memset(&hm, 0, sizeof(hm));
     if (is_group) {
         hm.type = MSG_HISTORY_GROUP; hm.group_id = gid;
@@ -1047,7 +1084,8 @@ static void on_group_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer 
 /* ===================== 右键菜单 (好友/群) ===================== */
 static void menu_history(GtkMenuItem *mi, gpointer ud) {
     RowData *rd = ud;
-    gtk_text_buffer_set_text(CTX.chat_buf, "", -1);
+    (void)mi;
+    ui_chat_clear();
     if (rd->kind == -2) {
         Message hm; memset(&hm, 0, sizeof(hm));
         hm.type = MSG_HISTORY_GROUP; hm.group_id = rd->gid;
@@ -1138,8 +1176,8 @@ static void on_send_clicked(GtkButton *b, gpointer ud) {
         return;
     }
     char ts[32]; fill_timestamp(ts, sizeof(ts));
-    char me[64]; snprintf(me, sizeof(me), "%s", CTX.nickname);
-    ui_append_chat(me, ts, text);
+    /* 自己发的消息: 用 ui_append_bubble + 自己账号 → 右对齐主色气泡 */
+    ui_append_bubble(CTX.account, CTX.nickname, ts, text);
     gtk_entry_set_text(GTK_ENTRY(CTX.input_entry), "");
 }
 
@@ -1166,7 +1204,7 @@ static void on_sendfile(GtkButton *b, gpointer ud) {
     g_free(path);
     /* 提示: 真正发送完时 worker 线程会通过 g_idle_add 在聊天框追加一行 */
     char ts[32]; fill_timestamp(ts, sizeof(ts));
-    ui_append_chat("[文件]", ts, "正在后台传输, 完成后会显示...");
+    ui_append_system(ts, "[文件] 正在后台传输, 完成后会显示...");
 }
 
 /* ===================== "+" 菜单 ===================== */
@@ -1339,14 +1377,138 @@ static void open_create_group_dialog(void) {
     net_send_text(MSG_GROUP_LIST, NULL, 0, NULL);
 }
 
-/* ===================== 接收线程回调 ===================== */
+/* ===================== 聊天气泡渲染 ===================== */
+
+/* 内容容器一变高就把垂直条推到底, 实现"新消息自动滚到底".
+ * 用户拖到中间看历史时不强行打回去 —— 如果当前 value 已经在底部
+ * (delta < page_size), 才推; 否则维持. */
+static void on_chat_vadj_changed(GtkAdjustment *a, gpointer ud) {
+    (void)ud;
+    double cur   = gtk_adjustment_get_value(a);
+    double page  = gtk_adjustment_get_page_size(a);
+    double upper = gtk_adjustment_get_upper(a);
+    /* 距离底部还差 < 1.5 个页时认为"在底", 才滚 */
+    if (upper - cur - page < page * 1.5)
+        gtk_adjustment_set_value(a, upper - page);
+}
+
+/* 公共: 把刚加的行挪到列表底部并触发 vadj changed (上面的 callback 会滚) */
+static void chat_row_added(GtkWidget *row) {
+    gtk_widget_show_all(row);
+    gtk_container_add(GTK_CONTAINER(CTX.chat_list), row);
+}
+
+void ui_chat_clear(void) {
+    if (!CTX.chat_list) return;
+    GList *kids = gtk_container_get_children(GTK_CONTAINER(CTX.chat_list));
+    for (GList *l = kids; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
+    g_list_free(kids);
+}
+
+void ui_append_bubble(const char *account, const char *nick,
+                      const char *time, const char *text) {
+    if (!CTX.chat_list) return;
+    int is_me = (account && CTX.account[0] && strcmp(account, CTX.account) == 0);
+
+    GtkWidget *row = gtk_list_box_row_new();
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_selectable (GTK_LIST_BOX_ROW(row), FALSE);
+
+    /* outer 横排, 决定整行左/右靠 */
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    gtk_widget_set_margin_top   (outer, 5);
+    gtk_widget_set_margin_bottom(outer, 5);
+    gtk_widget_set_margin_start (outer, 10);
+    gtk_widget_set_margin_end   (outer, 10);
+    gtk_container_add(GTK_CONTAINER(row), outer);
+
+    /* 派生头像调色板编号: 用 account hash, 与登录时一致 */
+    int color = 0;
+    for (const char *p = nick ? nick : "?"; *p; ++p)
+        color = (color * 131 + (unsigned char)*p) & 0xFFFF;
+    color %= 10;
+
+    /* vbox: meta (昵称+时间) + bubble 文本 */
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
+
+    char metabuf[160];
+    GtkWidget *meta = gtk_label_new(NULL);
+    if (is_me) {
+        snprintf(metabuf, sizeof(metabuf),
+            "<span color='#94a3b8' size='x-small'>%s</span>", time ? time : "");
+        gtk_label_set_xalign(GTK_LABEL(meta), 1.0);
+    } else {
+        snprintf(metabuf, sizeof(metabuf),
+            "<span color='#475569' weight='bold' size='x-small'>%s</span>"
+            "  <span color='#94a3b8' size='x-small'>%s</span>",
+            nick ? nick : "?", time ? time : "");
+        gtk_label_set_xalign(GTK_LABEL(meta), 0.0);
+    }
+    gtk_label_set_markup(GTK_LABEL(meta), metabuf);
+    gtk_box_pack_start(GTK_BOX(vbox), meta, FALSE, FALSE, 0);
+
+    GtkWidget *bubble = gtk_label_new(text ? text : "");
+    gtk_label_set_line_wrap     (GTK_LABEL(bubble), TRUE);
+    gtk_label_set_line_wrap_mode(GTK_LABEL(bubble), PANGO_WRAP_WORD_CHAR);
+    gtk_label_set_max_width_chars(GTK_LABEL(bubble), 40);
+    gtk_label_set_selectable(GTK_LABEL(bubble), TRUE);
+    gtk_label_set_xalign(GTK_LABEL(bubble), 0.0);
+    gtk_style_context_add_class(gtk_widget_get_style_context(bubble),
+                                is_me ? "bubble-me" : "bubble-other");
+    /* 让气泡按内容收缩, 不要被父容器拉满 */
+    GtkWidget *bubble_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_halign(bubble_box, is_me ? GTK_ALIGN_END : GTK_ALIGN_START);
+    gtk_box_pack_start(GTK_BOX(bubble_box), bubble, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), bubble_box, FALSE, FALSE, 0);
+
+    if (is_me) {
+        /* 我: outer 整体靠右; 不画头像 */
+        gtk_widget_set_halign(outer, GTK_ALIGN_END);
+        gtk_box_pack_start(GTK_BOX(outer), vbox, FALSE, FALSE, 0);
+    } else {
+        /* 别人: 左边一个头像, 右边 vbox */
+        gtk_widget_set_halign(outer, GTK_ALIGN_START);
+        GtkWidget *av = avatar_widget(account, nick, color, 36);
+        gtk_widget_set_valign(av, GTK_ALIGN_START);
+        gtk_box_pack_start(GTK_BOX(outer), av,   FALSE, FALSE, 0);
+        gtk_box_pack_start(GTK_BOX(outer), vbox, FALSE, FALSE, 0);
+    }
+
+    chat_row_added(row);
+}
+
+void ui_append_system(const char *time, const char *text) {
+    if (!CTX.chat_list) return;
+    GtkWidget *row = gtk_list_box_row_new();
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_selectable (GTK_LIST_BOX_ROW(row), FALSE);
+
+    GtkWidget *outer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_margin_top   (outer, 4);
+    gtk_widget_set_margin_bottom(outer, 4);
+    gtk_widget_set_halign(outer, GTK_ALIGN_CENTER);
+    gtk_container_add(GTK_CONTAINER(row), outer);
+
+    GtkWidget *lbl = gtk_label_new(NULL);
+    char buf[MAX_BODY_LEN + 64];
+    if (time && *time)
+        snprintf(buf, sizeof(buf), "%s · %s", time, text ? text : "");
+    else
+        snprintf(buf, sizeof(buf), "%s", text ? text : "");
+    gtk_label_set_text(GTK_LABEL(lbl), buf);
+    gtk_label_set_line_wrap(GTK_LABEL(lbl), TRUE);
+    gtk_style_context_add_class(gtk_widget_get_style_context(lbl), "bubble-system");
+    gtk_box_pack_start(GTK_BOX(outer), lbl, FALSE, FALSE, 0);
+
+    chat_row_added(row);
+}
+
+/* 兼容旧调用: 转发到系统消息样式 */
 void ui_append_chat(const char *who, const char *time, const char *text) {
-    GtkTextIter it;
-    gtk_text_buffer_get_end_iter(CTX.chat_buf, &it);
-    char line[MAX_BODY_LEN + 128];
-    snprintf(line, sizeof(line), "[%s] %s: %s\n",
-             time ? time : "", who ? who : "?", text ? text : "");
-    gtk_text_buffer_insert(CTX.chat_buf, &it, line, -1);
+    char buf[256];
+    if (who && *who) snprintf(buf, sizeof(buf), "%s %s", who, text ? text : "");
+    else             snprintf(buf, sizeof(buf), "%s", text ? text : "");
+    ui_append_system(time, buf);
 }
 
 void ui_refresh_friends(const char *body) {
@@ -1676,8 +1838,8 @@ static gboolean sendfile_ui_done(gpointer ud) {
     SendFileDone *d = ud;
     char ts[32]; fill_timestamp(ts, sizeof(ts));
     char log[300];
-    snprintf(log, sizeof(log), "已发送文件 %s (%ld 字节)", d->fname, d->size);
-    ui_append_chat("[文件]", ts, log);
+    snprintf(log, sizeof(log), "[文件] 已发送 %s (%ld 字节)", d->fname, d->size);
+    ui_append_system(ts, log);
     g_free(d);
     return G_SOURCE_REMOVE;
 }

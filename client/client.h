@@ -34,7 +34,8 @@ typedef struct {
     GtkWidget *chat_header;
     GtkWidget *chat_avatar_area; /* 顶部对方头像区 */
     GtkWidget *add_btn;
-    GtkTextBuffer *chat_buf;
+    GtkWidget *chat_list;        /* GtkListBox: 每条消息一个气泡行 */
+    GtkAdjustment *chat_vadj;    /* 用于"新消息后自动滚到底"            */
     GtkWidget *input_entry;
 
     /* 当前聊天对象 */
@@ -80,6 +81,18 @@ void *recv_thread(void *arg);
 /* UI 入口 */
 void show_login(int argc, char **argv);
 void show_main(void);
+/* 三种聊天行渲染:
+ *  - ui_append_bubble(account, nick, time, text)
+ *      正经的私聊/群聊气泡; account 命中 CTX.account 时右对齐主色,
+ *      否则左对齐 + 头像 + 浅灰边框
+ *  - ui_append_system(time, text)
+ *      系统提示 (上下线 / 文件传输 / 服务器应答), 居中浅灰
+ *  - ui_chat_clear() 清空当前会话面板 */
+void ui_append_bubble(const char *account, const char *nick,
+                      const char *time, const char *text);
+void ui_append_system(const char *time, const char *text);
+void ui_chat_clear(void);
+/* 向后兼容: ui_append_chat 转发到 ui_append_system, 暂留以免老代码炸 */
 void ui_append_chat(const char *who, const char *time, const char *text);
 void ui_refresh_friends(const char *body);
 void ui_refresh_groups(const char *body);

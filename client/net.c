@@ -58,19 +58,21 @@ static gboolean dispatch_in_main(gpointer data) {
     Message *m = &p->m;
     switch (m->type) {
     case MSG_RESPONSE:
-        /* 简单实现: 直接把 server 的提示打到聊天框, 帮助调试 */
-        ui_append_chat("[server]", m->timestamp, m->body);
+        /* 服务器应答 (登录失败/状态提示等) — 以系统消息样式显示 */
+        if (m->body[0]) ui_append_system(m->timestamp, m->body);
         break;
     case MSG_PRIVATE_CHAT:
     case MSG_GROUP_CHAT: {
-        char who[96];
-        /* from_nick 是昵称 (服务器填), from_name 是账号 */
+        /* from_name=发送者账号, from_nick=昵称.
+         * ui_append_bubble 内部比对 account 决定左/右气泡. */
         const char *nick = m->from_nick[0] ? m->from_nick : m->from_name;
-        if (m->type == MSG_GROUP_CHAT)
-            snprintf(who, sizeof(who), "%s@群%u", nick, m->group_id);
-        else
-            snprintf(who, sizeof(who), "%s", nick);
-        ui_append_chat(who, m->timestamp, m->body);
+        if (m->type == MSG_GROUP_CHAT) {
+            char nb[64];
+            snprintf(nb, sizeof(nb), "%s @群%u", nick, m->group_id);
+            ui_append_bubble(m->from_name, nb, m->timestamp, m->body);
+        } else {
+            ui_append_bubble(m->from_name, nick, m->timestamp, m->body);
+        }
         break;
     }
     case MSG_FRIEND_LIST:
@@ -82,22 +84,22 @@ static gboolean dispatch_in_main(gpointer data) {
     case MSG_NOTIFY_ONLINE: {
         char s[128];
         snprintf(s, sizeof(s), "好友 %s 上线", m->from_nick[0] ? m->from_nick : m->from_name);
-        ui_append_chat("[通知]", m->timestamp, s);
+        ui_append_system(m->timestamp, s);
         net_send_text(MSG_FRIEND_LIST, NULL, 0, NULL);
         break;
     }
     case MSG_NOTIFY_OFFLINE: {
         char s[128];
         snprintf(s, sizeof(s), "好友 %s 下线", m->from_nick[0] ? m->from_nick : m->from_name);
-        ui_append_chat("[通知]", m->timestamp, s);
+        ui_append_system(m->timestamp, s);
         net_send_text(MSG_FRIEND_LIST, NULL, 0, NULL);
         break;
     }
     case MSG_FILE_BEGIN: {
-        char s[128];
+        char s[160];
         snprintf(s, sizeof(s), "收到来自 %s 的文件 %s (%u 字节), 已保存到 recv/",
-                 m->from_name, m->body, m->status);
-        ui_append_chat("[文件]", m->timestamp, s);
+                 m->from_nick[0] ? m->from_nick : m->from_name, m->body, m->status);
+        ui_append_system(m->timestamp, s);
         break;
     }
 
