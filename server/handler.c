@@ -476,6 +476,15 @@ void *client_thread(void *arg) {
             send_msg(fd, &o);
             break;
         }
+        /* 消息检索: 必须登录, 只搜本人参与过的对话 */
+        case MSG_MSG_SEARCH: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "未登录"); break; }
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_MSG_SEARCH;
+            o.body_len = db_msg_search(sess.uid, m.body, o.body, MAX_BODY_LEN);
+            send_msg(fd, &o);
+            break;
+        }
 
         default:
             resp(fd, RS_FAIL, "unknown msg");

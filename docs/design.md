@@ -171,3 +171,68 @@ strace -p <tid> -e read,write       # 跟踪某 worker 的收发
 mysql chat_linux -e 'select * from offline_msg'
 journalctl --user -t chat_server    # (如果接入了 syslog)
 ```
+
+---
+
+## 10. 功能清单对照（课程要求）
+
+| # | 老师要求 | 实现位置 |
+|---|---------|---------|
+| - | 私聊 | `server/handler.c::do_private` |
+| - | 群聊 (一部分人, 不是广播) | `server/handler.c::do_group` + `db_group_members` |
+| - | 用户信息管理 | 注册/登录/昵称/账号/头像 (整套) |
+| 1 | 文件传输 | `MSG_FILE_BEGIN/CHUNK/END` |
+| 2 | 好友数 | `client/ui.c::ui_refresh_friends` 统计后写入 `self_count_lbl` |
+| 3 | 离线消息 | `offline_msg` 表 + `db_offline_take` |
+| 4 | 在线好友数 | 同 (2), `online` 列 |
+| 5 | 优雅退出 | `client/main.c::on_term_signal` + `on_main_destroy` 发 `MSG_LOGOUT` |
+| 6 | 查看历史 | `MSG_HISTORY_PRIV/GROUP` + `db_history_priv/group` |
+| 7 | 连续聊天 | TextView 顺序追加, 不切换会话不重置 |
+| 8 | 消息检索 | `MSG_MSG_SEARCH` + `db_msg_search` 对 messages.content 做 LIKE |
+| 9 | 信息存储 | MySQL 八张表 (users / friends / chat_groups / group_members / messages / offline_msg / friend_requests / group_join_requests) |
+| 10 | 好友添加 | `MSG_FRIEND_REQ/REPLY` 申请流, 不再直接互加 |
+| 11 | 图形化界面 | GTK3 + Cairo 头像 + CSS 皮肤 |
+| 12 | 多线程文件传输 | `client/ui.c::sendfile_worker` worker 线程发送, 主线程不卡 |
+| 13 | P2P | 见下文 §11 设计预案 |
+| 14 | 进程共享 | 见下文 §12 设计预案 |
+| 15 | 连接共享 | `server/db.c::g_dbmu` 把唯一的 MySQL 连接串行化共享给所有 worker 线程 (多 worker 线程, 一份 DB 连接) |
+
+---
+
+## 11. P2P 设计预案
+
+**目标**: 大文件不经服务器中转, 客户端直连客户端, 省带宽 + 防服务端单点瓶颈.
+
+**协议扩展**:
+- `MSG_P2P_PUNCH_REQ`  客户端 A → server: "想直接发文件给 B"
+- `MSG_P2P_PUNCH_INFO` server → A 和 B: 把对端的内网 IP:port 都告诉双方
+- 双方各自 `bind()` 一个新 socket 监听, 同时 `connect()` 对方的地址(同 NAT 内大概率成功)
+- 通了之后, 文件 chunk 走这条直连 socket; 服务器只做"撮合"不再参与
+
+**适用场景**: 同一 LAN / 同一 WSL 实例 / 同 NAT 后的两台机. 跨公网需 STUN/TURN, 不在课程要求.
+
+**风险点**: 两端都在 NAT 后时 punch 可能失败, 需要 fallback 到服务器中转 (现有路径).
+
+---
+
+## 12. 进程共享设计预案
+
+**目标**: 把"在线用户表"从线程间共享 (现状) 升级为进程间共享, 演示 `mmap MAP_SHARED` + `sem_open` 的用法.
+
+**改造**:
+- `online_init()` 用 `mmap(NULL, sizeof(OnlineEntry) * MAX_ONLINE_USERS, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, -1, 0)` 替换静态数组
+- `pthread_mutex_t` 必须 `PTHREAD_PROCESS_SHARED`, 或者用 POSIX 命名信号量 `sem_open(...)`
+- 服务器入口处 `fork()` 出 N 个 worker 进程, 每个独立 `accept()`; 共享在线表互访
+- 数据库连接每个进程一份 (无法共享 socket)
+
+**收益**: 一个 worker 崩了不会影响其他, 适合长跑服务. **代价**: 共享内存设计更复杂, 调试更难.
+
+代码侧只需把 `server/online.c` 的全局变量替换为 mmap 指针, 锁换成 process-shared 就能切换. 我们当前保持线程方案, 在 `docs/design.md` 这里给出明确迁移路径.
+
+---
+
+## 13. 连接共享 — 现状
+
+`server/db.c` 中只维护 **一份 MySQL 连接 `g_conn`**, 所有 worker 线程通过 `g_dbmu` 互斥锁串行化访问它. 这就是"连接共享" — N 个工作流复用 1 个数据库连接, 节省了 N - 1 个连接开销.
+
+后续若并发增高, 可平滑升级为连接池: 把 `g_conn` 改成 `g_pool[POOL_N]`, `g_dbmu` 换成 信号量 + 数组互斥, 每个查询 `acquire/release`. 函数签名不变, 上层调用零修改. 当前规模不需要, 留作扩展项.

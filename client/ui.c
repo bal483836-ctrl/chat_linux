@@ -35,6 +35,8 @@ static const struct { double r, g, b; } AVATAR_COLORS[10] = {
 };
 
 /* ---- 前向声明 ---- */
+static void on_main_destroy   (GtkWidget *, gpointer);
+static void launch_sendfile_thread(const char *path, const char *peer_acc);
 static void do_login_clicked(GtkButton *, gpointer);
 static void open_register_win(GtkButton *, gpointer);
 static void do_register_confirm(GtkButton *, gpointer);
@@ -835,7 +837,12 @@ void show_main(void) {
     gtk_window_set_title(GTK_WINDOW(w), title);
     gtk_window_set_default_size(GTK_WINDOW(w), 960, 620);
     gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
-    g_signal_connect(w, "destroy", G_CALLBACK(gtk_main_quit), NULL);
+    /* 优雅退出 (功能 5):
+     *  - 用户关主窗 → 先给服务器发 MSG_LOGOUT, 让 server 端清掉 online_table
+     *    并广播下线给我的好友 (do_private/do_group 走 normal channel 都依赖 fd)
+     *  - 再 net_close + gtk_main_quit, 让 main() 退出
+     *  这样不会留 zombie socket, 也不会让别人显示我还在线 */
+    g_signal_connect(w, "destroy", G_CALLBACK(on_main_destroy), NULL);
     CTX.main_win = w;
 
     GtkWidget *hpane = gtk_paned_new(GTK_ORIENTATION_HORIZONTAL);
@@ -860,8 +867,14 @@ void show_main(void) {
     snprintf(buf, sizeof(buf), "<span color='#94a3b8' size='small'>账号 %s</span>", CTX.account);
     gtk_label_set_markup(GTK_LABEL(CTX.self_acc_lbl), buf);
     gtk_label_set_xalign(GTK_LABEL(CTX.self_acc_lbl), 0.0);
-    gtk_box_pack_start(GTK_BOX(svb), CTX.self_nick_lbl, FALSE, FALSE, 0);
-    gtk_box_pack_start(GTK_BOX(svb), CTX.self_acc_lbl,  FALSE, FALSE, 0);
+    /* 好友数 + 在线数, 真实数字会在 ui_refresh_friends 收到后回填 */
+    CTX.self_count_lbl = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(CTX.self_count_lbl),
+        "<span color='#94a3b8' size='small'>好友 0  在线 0</span>");
+    gtk_label_set_xalign(GTK_LABEL(CTX.self_count_lbl), 0.0);
+    gtk_box_pack_start(GTK_BOX(svb), CTX.self_nick_lbl,   FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(svb), CTX.self_acc_lbl,    FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(svb), CTX.self_count_lbl,  FALSE, FALSE, 0);
     gtk_widget_set_hexpand(svb, TRUE);
     gtk_box_pack_start(GTK_BOX(self), svb, TRUE, TRUE, 0);
 
@@ -1130,51 +1143,37 @@ static void on_send_clicked(GtkButton *b, gpointer ud) {
     gtk_entry_set_text(GTK_ENTRY(CTX.input_entry), "");
 }
 
+/* 文件按钮点击: 选文件 → 把发送扔给独立线程 (功能 12 多线程文件传输).
+ * 这样:
+ *   - 大文件传输不会冻 UI; 选完文件主线程立刻回到事件循环
+ *   - 用户可以同时给多个好友传不同文件 (每次点击启一个新线程) */
 static void on_sendfile(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     if (CTX.peer_is_group || !*CTX.peer_name) {
-        msgbox(GTK_WINDOW(CTX.main_win), GTK_MESSAGE_WARNING, "请先选择一位好友以传文件"); return;
+        msgbox(GTK_WINDOW(CTX.main_win), GTK_MESSAGE_WARNING, "请先选择一位好友以传文件");
+        return;
     }
     GtkWidget *fc = gtk_file_chooser_dialog_new("选择文件", GTK_WINDOW(CTX.main_win),
         GTK_FILE_CHOOSER_ACTION_OPEN, "取消", GTK_RESPONSE_CANCEL,
         "打开", GTK_RESPONSE_ACCEPT, NULL);
-    if (gtk_dialog_run(GTK_DIALOG(fc)) != GTK_RESPONSE_ACCEPT) { gtk_widget_destroy(fc); return; }
+    if (gtk_dialog_run(GTK_DIALOG(fc)) != GTK_RESPONSE_ACCEPT) {
+        gtk_widget_destroy(fc); return;
+    }
     char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
     gtk_widget_destroy(fc);
     if (!path) return;
-    FILE *fp = fopen(path, "rb");
-    if (!fp) { g_free(path); return; }
-    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fseek(fp, 0, SEEK_SET);
-    const char *fname = strrchr(path, '/'); fname = fname ? fname + 1 : path;
-    Message m; memset(&m, 0, sizeof(m));
-    m.type = MSG_FILE_BEGIN; m.status = (uint32_t)sz;
-    strncpy(m.to_name, CTX.peer_name, MAX_NAME_LEN - 1);
-    strncpy(m.body, fname, MAX_BODY_LEN - 1); m.body_len = strlen(fname);
-    fill_timestamp(m.timestamp, sizeof(m.timestamp));
-    net_send(&m);
-    while (1) {
-        memset(&m, 0, sizeof(m));
-        m.type = MSG_FILE_CHUNK;
-        strncpy(m.to_name, CTX.peer_name, MAX_NAME_LEN - 1);
-        size_t n = fread(m.body, 1, FILE_CHUNK_SIZE, fp);
-        if (n == 0) break;
-        m.body_len = (uint32_t)n;
-        net_send(&m);
-    }
-    memset(&m, 0, sizeof(m)); m.type = MSG_FILE_END;
-    strncpy(m.to_name, CTX.peer_name, MAX_NAME_LEN - 1);
-    net_send(&m);
-    fclose(fp);
-    char ts[32]; fill_timestamp(ts, sizeof(ts));
-    char log[256]; snprintf(log, sizeof(log), "已发送文件 %s (%ld 字节)", fname, sz);
-    ui_append_chat("[文件]", ts, log);
+    launch_sendfile_thread(path, CTX.peer_name);
     g_free(path);
+    /* 提示: 真正发送完时 worker 线程会通过 g_idle_add 在聊天框追加一行 */
+    char ts[32]; fill_timestamp(ts, sizeof(ts));
+    ui_append_chat("[文件]", ts, "正在后台传输, 完成后会显示...");
 }
 
 /* ===================== "+" 菜单 ===================== */
 static void plus_addfriend(GtkMenuItem *mi, gpointer ud) { (void)mi;(void)ud; open_search_dialog(1); }
 static void plus_addgroup (GtkMenuItem *mi, gpointer ud) { (void)mi;(void)ud; open_search_dialog(0); }
 static void plus_creategroup(GtkMenuItem *mi, gpointer ud) { (void)mi;(void)ud; open_create_group_dialog(); }
+static void plus_msgsearch  (GtkMenuItem *mi, gpointer ud);
 
 static void on_add_clicked(GtkButton *b, gpointer ud) {
     (void)ud;
@@ -1182,13 +1181,17 @@ static void on_add_clicked(GtkButton *b, gpointer ud) {
     GtkWidget *mi_f = gtk_menu_item_new_with_label("添加好友");
     GtkWidget *mi_g = gtk_menu_item_new_with_label("添加群");
     GtkWidget *mi_c = gtk_menu_item_new_with_label("创建群");
+    GtkWidget *mi_s = gtk_menu_item_new_with_label("搜索消息");
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_f);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_g);
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
     gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_c);
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), gtk_separator_menu_item_new());
+    gtk_menu_shell_append(GTK_MENU_SHELL(menu), mi_s);
     g_signal_connect(mi_f, "activate", G_CALLBACK(plus_addfriend),   NULL);
     g_signal_connect(mi_g, "activate", G_CALLBACK(plus_addgroup),    NULL);
     g_signal_connect(mi_c, "activate", G_CALLBACK(plus_creategroup), NULL);
+    g_signal_connect(mi_s, "activate", G_CALLBACK(plus_msgsearch),   NULL);
     gtk_widget_show_all(menu);
     gtk_menu_popup_at_widget(GTK_MENU(menu), GTK_WIDGET(b),
         GDK_GRAVITY_SOUTH_WEST, GDK_GRAVITY_NORTH_WEST, NULL);
@@ -1348,29 +1351,42 @@ void ui_append_chat(const char *who, const char *time, const char *text) {
 
 void ui_refresh_friends(const char *body) {
     clear_listbox(CTX.friend_box);
-    if (!body || !*body) return;
-    char *dup = g_strdup(body);
-    char *save = NULL, *line = strtok_r(dup, "\n", &save);
-    while (line) {
-        /* "account\tnickname\tcolor\tonline\tblack" */
-        char *t1 = strchr(line, '\t');     if (!t1) goto next;
-        *t1 = 0;
-        char *t2 = strchr(t1+1, '\t');     if (!t2) goto next;
-        *t2 = 0;
-        char *t3 = strchr(t2+1, '\t');     if (!t3) goto next;
-        *t3 = 0;
-        char *t4 = strchr(t3+1, '\t');     if (!t4) goto next;
-        *t4 = 0;
-        int color  = atoi(t2+1);
-        int online = atoi(t3+1);
-        int black  = atoi(t4+1);
-        gtk_container_add(GTK_CONTAINER(CTX.friend_box),
-                          make_friend_row(line, t1+1, color, online, black));
-        next:
-        line = strtok_r(NULL, "\n", &save);
+    /* 重新计数, 即便 body 是空也要把"好友 0" 显示出来 */
+    int total = 0, online_n = 0;
+    if (body && *body) {
+        char *dup = g_strdup(body);
+        char *save = NULL, *line = strtok_r(dup, "\n", &save);
+        while (line) {
+            /* "account\tnickname\tcolor\tonline\tblack" */
+            char *t1 = strchr(line, '\t');     if (!t1) goto next;
+            *t1 = 0;
+            char *t2 = strchr(t1+1, '\t');     if (!t2) goto next;
+            *t2 = 0;
+            char *t3 = strchr(t2+1, '\t');     if (!t3) goto next;
+            *t3 = 0;
+            char *t4 = strchr(t3+1, '\t');     if (!t4) goto next;
+            *t4 = 0;
+            int color  = atoi(t2+1);
+            int online = atoi(t3+1);
+            int black  = atoi(t4+1);
+            total++;
+            if (online) online_n++;
+            gtk_container_add(GTK_CONTAINER(CTX.friend_box),
+                              make_friend_row(line, t1+1, color, online, black));
+            next:
+            line = strtok_r(NULL, "\n", &save);
+        }
+        g_free(dup);
     }
-    g_free(dup);
     gtk_widget_show_all(CTX.friend_box);
+    /* 把好友数 / 在线数刷到自己卡片上 */
+    if (CTX.self_count_lbl) {
+        char m[128];
+        snprintf(m, sizeof(m),
+            "<span color='#94a3b8' size='small'>好友 %d  在线 %d</span>",
+            total, online_n);
+        gtk_label_set_markup(GTK_LABEL(CTX.self_count_lbl), m);
+    }
 }
 
 void ui_refresh_groups(const char *body) {
@@ -1468,4 +1484,277 @@ void ui_notify_text(const char *title, const char *text) {
     gtk_message_dialog_format_secondary_text(GTK_MESSAGE_DIALOG(d), "%s", text ? text : "");
     g_signal_connect(d, "response", G_CALLBACK(gtk_widget_destroy), NULL);
     gtk_widget_show_all(d);
+}
+
+/* ============================================================
+ *  消息检索对话框 (功能 8)
+ *
+ *  设计:
+ *   - 用户在 "+" 菜单点"搜索消息" → 弹出对话框
+ *   - 顶部输入框 + 搜索按钮; 按回车或按钮触发 MSG_MSG_SEARCH
+ *   - 列表显示命中条目 (时间 / 发送人 / 对话 / 摘要)
+ *   - 双击行: 切换到对应会话并加载历史
+ *
+ *  对话框采用单例 (g_msearch_dlg) 避免重复打开. */
+typedef struct {
+    GtkWidget    *dlg;
+    GtkWidget    *entry;
+    GtkWidget    *listbox;
+} MsgSearchDlg;
+
+static MsgSearchDlg *g_msearch_dlg = NULL;
+
+/* 每行 RowData 用 acc 字段塞 peer 标识 (账号或 群号), reqid 塞 kind */
+static GtkWidget *make_msearch_row(const char *sent_at, const char *from_nick,
+                                   int kind, int peer, const char *snippet) {
+    GtkWidget *row = gtk_list_box_row_new();
+    gtk_style_context_add_class(gtk_widget_get_style_context(row), "im-row");
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_container_add(GTK_CONTAINER(row), vbox);
+
+    char buf[256];
+    GtkWidget *l1 = gtk_label_new(NULL);
+    if (kind == 0)
+        snprintf(buf, sizeof(buf),
+            "<span weight='bold'>%s</span> <span color='#94a3b8' size='small'>→ 与 %d 的私聊  %s</span>",
+            from_nick, peer, sent_at);
+    else
+        snprintf(buf, sizeof(buf),
+            "<span weight='bold'>%s</span> <span color='#94a3b8' size='small'>→ 群#%d  %s</span>",
+            from_nick, peer, sent_at);
+    gtk_label_set_markup(GTK_LABEL(l1), buf);
+    gtk_label_set_xalign(GTK_LABEL(l1), 0.0);
+
+    GtkWidget *l2 = gtk_label_new(NULL);
+    snprintf(buf, sizeof(buf), "<span size='small'>%s</span>", snippet ? snippet : "");
+    gtk_label_set_markup(GTK_LABEL(l2), buf);
+    gtk_label_set_xalign(GTK_LABEL(l2), 0.0);
+    gtk_label_set_line_wrap(GTK_LABEL(l2), TRUE);
+
+    gtk_box_pack_start(GTK_BOX(vbox), l1, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), l2, FALSE, FALSE, 0);
+
+    /* 用 RowData 复用结构: kind 字段(原本 -1/-2/0/1) 这里直接放 0/1; reqid 放 peer */
+    RowData *rd = g_malloc0(sizeof(*rd));
+    rd->kind  = kind;
+    rd->reqid = peer;
+    g_object_set_data_full(G_OBJECT(row), "rd", rd, (GDestroyNotify)g_free);
+
+    gtk_widget_show_all(row);
+    return row;
+}
+
+static void msearch_do(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    if (!g_msearch_dlg) return;
+    const char *q = gtk_entry_get_text(GTK_ENTRY(g_msearch_dlg->entry));
+    if (!*q) return;
+    Message m; memset(&m, 0, sizeof(m));
+    m.type = MSG_MSG_SEARCH;
+    strncpy(m.body, q, MAX_BODY_LEN - 1);
+    m.body_len = strlen(q);
+    net_send(&m);
+}
+
+/* 双击命中条目跳转到对应会话 */
+static void msearch_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer ud) {
+    (void)box; (void)ud;
+    if (!row) return;
+    RowData *rd = g_object_get_data(G_OBJECT(row), "rd");
+    if (!rd) return;
+    if (rd->kind == 0) {
+        /* 私聊: peer 是账号, 直接找好友列表里那一行选中 */
+        char acc[16]; snprintf(acc, sizeof(acc), "%d", rd->reqid);
+        switch_chat_target(0, acc, acc, 0, 0);
+    } else {
+        /* 群聊: peer 是群号 */
+        switch_chat_target(1, "群聊", "群聊", rd->reqid % 10, rd->reqid);
+    }
+    gtk_widget_destroy(g_msearch_dlg->dlg);
+}
+
+static void msearch_destroyed(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (g_msearch_dlg) { g_free(g_msearch_dlg); g_msearch_dlg = NULL; }
+}
+
+/* 接收线程把搜索结果交给我们时调用 */
+void ui_msg_search_result(const char *body) {
+    if (!g_msearch_dlg) return;
+    clear_listbox(g_msearch_dlg->listbox);
+    if (!body || !*body) return;
+    char *dup = g_strdup(body);
+    char *save = NULL, *line = strtok_r(dup, "\n", &save);
+    while (line) {
+        /* "msg_id\tsent_at\tfrom_nick\tkind\tpeer\tsnippet" */
+        char *f[6] = {0};
+        int n = 0;
+        char *p = line, *q;
+        while (n < 6 && (q = strchr(p, '\t'))) { *q = 0; f[n++] = p; p = q + 1; }
+        if (*p && n < 6) f[n++] = p;
+        if (n >= 6) {
+            gtk_container_add(GTK_CONTAINER(g_msearch_dlg->listbox),
+                make_msearch_row(f[1], f[2], atoi(f[3]), atoi(f[4]), f[5]));
+        }
+        line = strtok_r(NULL, "\n", &save);
+    }
+    g_free(dup);
+    gtk_widget_show_all(g_msearch_dlg->listbox);
+}
+
+static void plus_msgsearch(GtkMenuItem *mi, gpointer ud) {
+    (void)mi; (void)ud;
+    if (g_msearch_dlg) { gtk_window_present(GTK_WINDOW(g_msearch_dlg->dlg)); return; }
+
+    GtkWidget *d = gtk_window_new(GTK_WINDOW_TOPLEVEL);
+    gtk_window_set_title(GTK_WINDOW(d), "搜索消息");
+    gtk_window_set_default_size(GTK_WINDOW(d), 520, 480);
+    gtk_window_set_transient_for(GTK_WINDOW(d), GTK_WINDOW(CTX.main_win));
+    gtk_window_set_modal(GTK_WINDOW(d), TRUE);
+
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 8);
+    gtk_container_set_border_width(GTK_CONTAINER(vbox), 12);
+    gtk_container_add(GTK_CONTAINER(d), vbox);
+
+    GtkWidget *hb = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *en = gtk_entry_new();
+    gtk_entry_set_placeholder_text(GTK_ENTRY(en),
+        "输入关键字 (最多返回 50 条; 范围: 我参与的所有私聊和我加入的群聊)");
+    gtk_widget_set_hexpand(en, TRUE);
+    GtkWidget *bs = gtk_button_new_with_label("搜索");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bs), "im-primary");
+    gtk_box_pack_start(GTK_BOX(hb), en, TRUE,  TRUE,  0);
+    gtk_box_pack_start(GTK_BOX(hb), bs, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), hb, FALSE, FALSE, 0);
+
+    GtkWidget *hint = gtk_label_new(NULL);
+    gtk_label_set_markup(GTK_LABEL(hint),
+        "<span color='#94a3b8' size='small'>双击命中项跳转到对应会话</span>");
+    gtk_label_set_xalign(GTK_LABEL(hint), 0.0);
+    gtk_box_pack_start(GTK_BOX(vbox), hint, FALSE, FALSE, 0);
+
+    GtkWidget *lb = gtk_list_box_new();
+    g_signal_connect(lb, "row-activated", G_CALLBACK(msearch_row_activated), NULL);
+    GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
+    gtk_container_add(GTK_CONTAINER(sw), lb);
+    gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
+
+    MsgSearchDlg *sd = g_malloc0(sizeof(*sd));
+    sd->dlg = d; sd->entry = en; sd->listbox = lb;
+    g_msearch_dlg = sd;
+
+    g_signal_connect(bs, "clicked",  G_CALLBACK(msearch_do), NULL);
+    g_signal_connect(en, "activate", G_CALLBACK(msearch_do), NULL);
+    g_signal_connect(d,  "destroy",  G_CALLBACK(msearch_destroyed), NULL);
+    gtk_widget_show_all(d);
+}
+
+/* ============================================================
+ *  多线程文件传输 (功能 12)
+ *
+ *  改造前: 在 GUI 主线程同步读文件+连发 chunk, 大文件会卡 UI.
+ *  改造后: 把发送动作扔给 worker 线程, 主线程立刻返回.
+ *
+ *  正在传输的多个文件会并发跑各自的线程;
+ *  send_mu 互斥保证它们写同一个 socket 时帧不会交错 (net.c 里实现).
+ *
+ *  线程完成后用 g_idle_add 回到主线程, 在聊天框追加一行"已发送 …".
+ *  这样就保持了"网络逻辑 vs UI 逻辑"的清晰分工. */
+typedef struct {
+    char path[512];
+    char peer_acc[MAX_NAME_LEN];
+    char fname[256];
+    long size;
+} SendFileTask;
+
+typedef struct {
+    char  fname[256];
+    long  size;
+} SendFileDone;
+
+static gboolean sendfile_ui_done(gpointer ud) {
+    SendFileDone *d = ud;
+    char ts[32]; fill_timestamp(ts, sizeof(ts));
+    char log[300];
+    snprintf(log, sizeof(log), "已发送文件 %s (%ld 字节)", d->fname, d->size);
+    ui_append_chat("[文件]", ts, log);
+    g_free(d);
+    return G_SOURCE_REMOVE;
+}
+
+static void *sendfile_worker(void *arg) {
+    SendFileTask *t = arg;
+    FILE *fp = fopen(t->path, "rb");
+    if (!fp) { g_free(t); return NULL; }
+    /* 三段: BEGIN -> 多个 CHUNK -> END */
+    Message m; memset(&m, 0, sizeof(m));
+    m.type = MSG_FILE_BEGIN; m.status = (uint32_t)t->size;
+    strncpy(m.to_name, t->peer_acc, MAX_NAME_LEN - 1);
+    strncpy(m.body,    t->fname,    MAX_BODY_LEN - 1); m.body_len = strlen(t->fname);
+    fill_timestamp(m.timestamp, sizeof(m.timestamp));
+    net_send(&m);
+
+    while (1) {
+        memset(&m, 0, sizeof(m));
+        m.type = MSG_FILE_CHUNK;
+        strncpy(m.to_name, t->peer_acc, MAX_NAME_LEN - 1);
+        size_t n = fread(m.body, 1, FILE_CHUNK_SIZE, fp);
+        if (n == 0) break;
+        m.body_len = (uint32_t)n;
+        net_send(&m);
+    }
+    memset(&m, 0, sizeof(m));
+    m.type = MSG_FILE_END;
+    strncpy(m.to_name, t->peer_acc, MAX_NAME_LEN - 1);
+    net_send(&m);
+    fclose(fp);
+
+    /* 通知主线程 */
+    SendFileDone *d = g_malloc0(sizeof(*d));
+    strncpy(d->fname, t->fname, sizeof(d->fname) - 1);
+    d->size = t->size;
+    g_idle_add(sendfile_ui_done, d);
+
+    g_free(t);
+    return NULL;
+}
+
+/* 替换 on_sendfile 原同步版本 */
+static void launch_sendfile_thread(const char *path, const char *peer_acc) {
+    FILE *fp = fopen(path, "rb");
+    if (!fp) return;
+    fseek(fp, 0, SEEK_END); long sz = ftell(fp); fclose(fp);
+    if (sz <= 0) return;
+
+    SendFileTask *t = g_malloc0(sizeof(*t));
+    strncpy(t->path,     path,     sizeof(t->path) - 1);
+    strncpy(t->peer_acc, peer_acc, sizeof(t->peer_acc) - 1);
+    const char *fname = strrchr(path, '/');
+    fname = fname ? fname + 1 : path;
+    strncpy(t->fname, fname, sizeof(t->fname) - 1);
+    t->size = sz;
+
+    pthread_t tid;
+    pthread_create(&tid, NULL, sendfile_worker, t);
+    pthread_detach(tid);
+}
+
+/* ============================================================
+ *  优雅退出 (功能 5)
+ *
+ *  GTK 主窗 destroy 信号触发这里, 我们先做收尾再 gtk_main_quit:
+ *   1) 发 MSG_LOGOUT 让服务器从 online table 移除, 并通知好友下线
+ *   2) net_close() 主动关 socket, 服务器侧 recv_msg 返回 0 后会
+ *      自己走 cleanup 路径 (跟正常掉线一样)
+ *   3) 还有一个细节 - 这里没有 pthread_join 接收线程, 因为它跑在
+ *      recv_msg 阻塞调用上, socket 一关它就退出, 进程结束时一起回收 */
+static void on_main_destroy(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (CTX.sockfd > 0) {
+        Message bye; memset(&bye, 0, sizeof(bye));
+        bye.type = MSG_LOGOUT;
+        net_send(&bye);
+        net_close();
+    }
+    gtk_main_quit();
 }

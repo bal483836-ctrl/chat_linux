@@ -82,4 +82,9 @@ int  db_user_search (const char *q, char *out, int outsz,
                      int (*is_online)(int));
 int  db_group_search(const char *q, char *out, int outsz);
 
+/* 全文搜索. 搜 user_id 参与过的所有消息(私聊收发 + 加入的群聊),
+ * 命中 LIKE %q% 的, 按时间倒序, 最多 50 条. 输出行格式:
+ *   "msg_id\tsent_at\tfrom_nick\tkind\tpeer\tsnippet" */
+int  db_msg_search  (int user_id, const char *q, char *out, int outsz);
+
 #endif

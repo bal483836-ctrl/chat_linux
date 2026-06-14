@@ -674,3 +674,63 @@ int db_group_search(const char *q, char *out, int outsz) {
     UNLOCK();
     return used;
 }
+
+/* 消息全文搜索.
+ *
+ * SQL 思路: 把"我参与的消息"分两路 UNION:
+ *   1) 私聊 (msg_type=0): from_id=我 或 target_id=我
+ *   2) 群聊 (msg_type=1): target_id 属于我加入的群
+ * 然后再 WHERE content LIKE '%关键字%', ORDER BY sent_at DESC LIMIT 50.
+ *
+ * 注意拼 SQL 时关键字已用 mysql_real_escape_string 防注入; LIKE 的
+ * %% 是给 printf 转义, 实际下到 MySQL 是单 %.
+ *
+ * 输出每行: "msg_id\tsent_at\tfrom_nick\tkind\tpeer\tsnippet"
+ *   - kind 私聊=0 群聊=1
+ *   - peer 私聊填对方账号 (=ACCOUNT_BASE+对方id), 群聊填群号
+ *   - snippet 取 content 前 80 字符截断, 制表符替换成空格, 避免破坏分隔 */
+int db_msg_search(int user_id, const char *q, char *out, int outsz) {
+    char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
+    char sql[1024];
+    snprintf(sql, sizeof(sql),
+        "SELECT m.id, m.sent_at, u.nickname, m.msg_type, "
+        "       CASE WHEN m.msg_type=0 "
+        "            THEN IF(m.from_id=%d, m.target_id, m.from_id) "
+        "            ELSE m.target_id END AS peer_raw, "
+        "       LEFT(m.content, 80) "
+        "FROM messages m "
+        "JOIN users u ON u.id = m.from_id "
+        "WHERE m.content LIKE '%%%s%%' AND ("
+        "       (m.msg_type=0 AND (m.from_id=%d OR m.target_id=%d)) "
+        "    OR (m.msg_type=1 AND m.target_id IN ("
+        "          SELECT group_id FROM group_members WHERE user_id=%d))"
+        ") "
+        "ORDER BY m.sent_at DESC LIMIT 50",
+        user_id, eq, user_id, user_id, user_id);
+    LOCK();
+    out[0] = 0; int used = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        while (r && (row = mysql_fetch_row(r))) {
+            int kind = atoi(row[3]);
+            int peer_raw = atoi(row[4]);
+            int peer_display = (kind == 0) ? (peer_raw + ACCOUNT_BASE) : peer_raw;
+            /* snippet 里的 \t \n 替换成空格, 避免冲掉行/列分隔 */
+            char snippet[128] = {0};
+            if (row[5]) {
+                strncpy(snippet, row[5], sizeof(snippet) - 1);
+                for (char *p = snippet; *p; ++p) if (*p == '\t' || *p == '\n') *p = ' ';
+            }
+            int n = snprintf(out + used, outsz - used,
+                             "%s\t%s\t%s\t%d\t%d\t%s\n",
+                             row[0], row[1], row[2] ? row[2] : "?",
+                             kind, peer_display, snippet);
+            if (n <= 0 || n >= outsz - used) break;
+            used += n;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return used;
+}

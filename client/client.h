@@ -23,6 +23,7 @@ typedef struct {
     GtkWidget *self_avatar;
     GtkWidget *self_nick_lbl;
     GtkWidget *self_acc_lbl;
+    GtkWidget *self_count_lbl;     /* "好友 N (在线 M)" */
 
     /* 三个左侧列表使用 GtkListBox 自绘行 */
     GtkWidget *friend_box;       /* GtkListBox */
@@ -87,6 +88,7 @@ void ui_add_request(int kind, int reqid, const char *acc, const char *nick, int 
                     const char *gname, const char *hello, int gid);
 void ui_notify_text(const char *title, const char *text);
 void ui_search_result(int is_user, const char *body);
+void ui_msg_search_result(const char *body);
 
 /* 创建一个圆形头像控件.
  *   account  - 用于在缓存中查图片 (NULL 或 "" 表示不查, 直接画字母)

@@ -66,6 +66,13 @@ enum MsgType {
     MSG_AVATAR_UPLOAD  = 80,  /* 上传自己的头像: body=PNG 字节, status=字节数      */
     MSG_AVATAR_GET     = 81,  /* 拉取头像: to_name=对方账号; 服务端回 MSG_AVATAR_DATA*/
     MSG_AVATAR_DATA    = 82,  /* 服务端回应: from_name=账号, status=字节数, body=PNG*/
+
+    /* ===== 消息检索 ===== (功能 8)
+     * 对历史聊天文本做关键字搜索, 包括我参与过的所有私聊和我所在群的群聊.
+     * body=关键字; 服务端回同 type, body 每行
+     *   "msg_id\ttime\tfrom_nick\tkind\tpeer\tsnippet"
+     * 其中 kind 0=私聊 1=群聊; peer 私聊填对方账号、群聊填群号. */
+    MSG_MSG_SEARCH     = 90,
 };
 
 /* 应答状态码.

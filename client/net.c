@@ -144,6 +144,10 @@ static gboolean dispatch_in_main(gpointer data) {
         avatar_cache_put(m->from_name, (unsigned char *)m->body, (int)m->status);
         break;
 
+    case MSG_MSG_SEARCH:
+        ui_msg_search_result(m->body);
+        break;
+
     default: break;
     }
     g_free(p);
