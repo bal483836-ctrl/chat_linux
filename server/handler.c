@@ -8,6 +8,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <arpa/inet.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 /* 当前线程持有的会话状态 */
 typedef struct {
@@ -406,6 +408,46 @@ void *client_thread(void *arg) {
             Message o; memset(&o, 0, sizeof(o));
             o.type = MSG_GROUP_JOIN_REQ_LIST;
             o.body_len = db_greq_list_for_owner(sess.uid, o.body, MAX_BODY_LEN);
+            send_msg(fd, &o);
+            break;
+        }
+
+        /* ===== 头像上传/拉取 =====
+         * 上传: 客户端把 PNG 字节塞进 body, status 写真实字节数 (因为 body
+         * 是定长缓冲, 真实数据后面可能有 0). 我们落到 data/avatars/<uid>.png.
+         * 拉取: 客户端给账号, 我们 open file 读字节, 装进 MSG_AVATAR_DATA
+         * 回去. 文件不存在时 status=0, 让客户端回退到首字母圆形头像. */
+        case MSG_AVATAR_UPLOAD: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "未登录"); break; }
+            uint32_t sz = m.status;
+            if (sz == 0 || sz > MAX_BODY_LEN) { resp(fd, RS_FAIL, "头像数据非法"); break; }
+            mkdir("data", 0755);
+            mkdir("data/avatars", 0755);
+            char path[128];
+            snprintf(path, sizeof(path), "data/avatars/%d.png", sess.uid);
+            FILE *fp = fopen(path, "wb");
+            if (!fp) { resp(fd, RS_FAIL, "保存失败"); break; }
+            fwrite(m.body, 1, sz, fp);
+            fclose(fp);
+            resp(fd, RS_OK, "头像已更新");
+            break;
+        }
+        case MSG_AVATAR_GET: {
+            int uid = db_user_id_by_account(m.to_name);
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_AVATAR_DATA;
+            strncpy(o.from_name, m.to_name, MAX_NAME_LEN - 1);
+            if (uid > 0) {
+                char path[128];
+                snprintf(path, sizeof(path), "data/avatars/%d.png", uid);
+                FILE *fp = fopen(path, "rb");
+                if (fp) {
+                    size_t n = fread(o.body, 1, MAX_BODY_LEN, fp);
+                    fclose(fp);
+                    o.body_len = (uint32_t)n;
+                    o.status   = (uint32_t)n;
+                }
+            }
             send_msg(fd, &o);
             break;
         }

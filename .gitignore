@@ -4,3 +4,4 @@ recv/
 *.swp
 core
 core.*
+data/

@@ -138,6 +138,12 @@ static gboolean dispatch_in_main(gpointer data) {
         ui_search_result(0, m->body);
         break;
 
+    /* 头像字节. from_name=该账号, status=字节数 (可能为 0 表示没头像).
+     * avatar_cache_put 会 decode PNG 并触发所有相关 widget 重绘. */
+    case MSG_AVATAR_DATA:
+        avatar_cache_put(m->from_name, (unsigned char *)m->body, (int)m->status);
+        break;
+
     default: break;
     }
     g_free(p);

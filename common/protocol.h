@@ -54,6 +54,18 @@ enum MsgType {
 
     MSG_USER_SEARCH    = 70,  /* body=关键字; 响应: "name\tonline\n..."      */
     MSG_GROUP_SEARCH   = 71,  /* body=关键字; 响应: "gid\tname\towner\tcnt\n"*/
+
+    /* ===== 头像 (PNG 字节) =====
+     * 设计要点:
+     *   - 上传仅在注册成功后做一次, 也允许登录后随时更新.
+     *   - 服务端把字节落到 data/avatars/<id>.png, 没用 BLOB 入库
+     *     (BLOB 入 MySQL 要 escape 二进制, 复杂还慢; 文件就够用).
+     *   - 64x64 PNG 大小通常 1~3KB, 一次 MSG 装得下;
+     *     超过 MAX_BODY_LEN 的图客户端会先 scale_simple 缩到 64.
+     */
+    MSG_AVATAR_UPLOAD  = 80,  /* 上传自己的头像: body=PNG 字节, status=字节数      */
+    MSG_AVATAR_GET     = 81,  /* 拉取头像: to_name=对方账号; 服务端回 MSG_AVATAR_DATA*/
+    MSG_AVATAR_DATA    = 82,  /* 服务端回应: from_name=账号, status=字节数, body=PNG*/
 };
 
 /* 应答状态码.

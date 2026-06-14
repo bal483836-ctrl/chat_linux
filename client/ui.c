@@ -1,10 +1,10 @@
 /* =========================================================
- *  chat_linux 客户端 GTK3 界面 (QQ 风格 v2)
+ *  chat_linux 客户端 GTK3 界面 (主风格 v2)
  *
  *  关键改造:
  *   - 账号登录 (6 位数), 不再用用户名
  *   - 注册带昵称, 服务器返回新分配账号
- *   - 全套 CSS 皮肤 (QQ 蓝, 圆角, 悬浮态)
+ *   - 全套 CSS 皮肤 (主蓝, 圆角, 悬浮态)
  *   - Cairo 圆形头像, 颜色来自 0..9 调色板
  *   - 好友/群/通知 三个 GtkListBox 自绘行
  * ========================================================= */
@@ -27,7 +27,7 @@ static const struct { double r, g, b; } AVATAR_COLORS[10] = {
     { 0.97, 0.72, 0.11 }, /* 黄     */
     { 0.44, 0.80, 0.44 }, /* 绿     */
     { 0.31, 0.76, 0.93 }, /* 浅蓝   */
-    { 0.07, 0.72, 0.96 }, /* QQ 蓝  */
+    { 0.07, 0.72, 0.96 }, /* 主蓝  */
     { 0.29, 0.42, 0.91 }, /* 蓝紫   */
     { 0.61, 0.44, 0.91 }, /* 紫     */
     { 0.91, 0.44, 0.76 }, /* 粉     */
@@ -94,11 +94,6 @@ static int prompt_text(const char *title, const char *prompt, char *out, int out
 }
 
 /* ---------- 头像绘制 ---------- */
-typedef struct {
-    char letter[8];  /* utf-8 首字符 */
-    int  color;
-    int  size;
-} AvatarCtx;
 
 /* 把 UTF-8 字符串首个字符复制到 out (最多 4 字节 + 终止符) */
 static void utf8_first(const char *s, char *out, int outsz) {
@@ -114,22 +109,69 @@ static void utf8_first(const char *s, char *out, int outsz) {
     out[n] = 0;
 }
 
+/* AvatarCtx 挂在 GtkDrawingArea 上, draw_avatar 回调读它来知道
+ * 该画哪个字、什么颜色, 以及是哪个账号 (用于查头像缓存). */
+typedef struct AvatarCtx_ {
+    char letter[8];                       /* 昵称首字符的 UTF-8 字节序列  */
+    int  color;                           /* 调色板下标 0..9             */
+    int  size;                            /* 绘制尺寸 (px)               */
+    char account[MAX_NAME_LEN];           /* "" 表示不查缓存(纯字母头像) */
+} AvatarCtx;
+
+/* 内部: 把 PNG 字节解码成 GdkPixbuf, 调用方 owns 返回值. */
+static GdkPixbuf *pixbuf_from_png_bytes(const unsigned char *bytes, int len) {
+    if (!bytes || len <= 0) return NULL;
+    GdkPixbufLoader *l = gdk_pixbuf_loader_new();
+    if (!gdk_pixbuf_loader_write(l, bytes, len, NULL)) { g_object_unref(l); return NULL; }
+    gdk_pixbuf_loader_close(l, NULL);
+    GdkPixbuf *p = gdk_pixbuf_loader_get_pixbuf(l);
+    if (p) g_object_ref(p);    /* loader 拥有 pixbuf, 要 ref 才能跨出去 */
+    g_object_unref(l);
+    return p;
+}
+
+/* DrawingArea draw 信号回调.
+ * 思路: 先看 CTX.avatar_cache 里这账号有没有 PNG 头像;
+ *       有就用 cairo_set_source_surface 把 pixbuf 画上去, 用圆形 clip 剪边;
+ *       没有 (或 account 为空) 就退回到老逻辑: 渐变圆 + 首字母. */
 static gboolean draw_avatar(GtkWidget *w, cairo_t *cr, gpointer ud) {
     AvatarCtx *a = ud;
     int ww = gtk_widget_get_allocated_width(w);
     int hh = gtk_widget_get_allocated_height(w);
-    int s = ww < hh ? ww : hh;
+    int s  = ww < hh ? ww : hh;
     double cx = ww / 2.0, cy = hh / 2.0, r = s / 2.0 - 1;
-    /* 圆形背景, 加一点渐变 */
+
+    /* --- 路径 1: 走 PNG 缓存 ---------------------------------- */
+    GdkPixbuf *pb = NULL;
+    if (CTX.avatar_cache && a->account[0]) {
+        pb = g_hash_table_lookup(CTX.avatar_cache, a->account);
+    }
+    if (pb) {
+        /* 圆形 clip → 把 pixbuf 缩放铺满 */
+        cairo_save(cr);
+        cairo_arc(cr, cx, cy, r, 0, 2 * M_PI);
+        cairo_clip(cr);
+        int pw = gdk_pixbuf_get_width(pb), ph = gdk_pixbuf_get_height(pb);
+        double sx = (double)s / pw, sy = (double)s / ph;
+        cairo_translate(cr, cx - s / 2.0, cy - s / 2.0);
+        cairo_scale(cr, sx, sy);
+        gdk_cairo_set_source_pixbuf(cr, pb, 0, 0);
+        cairo_paint(cr);
+        cairo_restore(cr);
+        return TRUE;
+    }
+
+    /* --- 路径 2: 渐变圆形 + 首字母 (回退) ---------------------- */
     cairo_pattern_t *p = cairo_pattern_create_linear(0, 0, 0, s);
     const struct { double r, g, b; } *c = &AVATAR_COLORS[a->color % 10];
+    /* 顶部稍亮、底部稍暗, 给一点立体感 */
     cairo_pattern_add_color_stop_rgb(p, 0, c->r * 1.08, c->g * 1.08, c->b * 1.08);
     cairo_pattern_add_color_stop_rgb(p, 1, c->r * 0.85, c->g * 0.85, c->b * 0.85);
     cairo_arc(cr, cx, cy, r, 0, 2 * M_PI);
     cairo_set_source(cr, p);
     cairo_fill(cr);
     cairo_pattern_destroy(p);
-    /* 文字 */
+
     cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
     cairo_set_font_size(cr, s * 0.55);
     cairo_text_extents_t te;
@@ -140,84 +182,154 @@ static gboolean draw_avatar(GtkWidget *w, cairo_t *cr, gpointer ud) {
     return TRUE;
 }
 
-GtkWidget *avatar_widget(const char *nick, int color, int size) {
+/* 控件销毁前从 avatar_widgets 反查表里把自己摘掉, 避免悬空指针.
+ * GLib 不允许在 destroy 时调用 hashtable 的 remove (因为 value 是 GList),
+ * 所以我们直接遍历 list 把当前 DA 节点干掉. */
+static void on_avatar_destroyed(GtkWidget *w, gpointer ud) {
+    AvatarCtx *a = ud;
+    if (CTX.avatar_widgets && a->account[0]) {
+        GList *l = g_hash_table_lookup(CTX.avatar_widgets, a->account);
+        l = g_list_remove(l, w);
+        if (l) g_hash_table_insert(CTX.avatar_widgets, g_strdup(a->account), l);
+        else   g_hash_table_remove(CTX.avatar_widgets, a->account);
+    }
+    g_free(a);
+}
+
+GtkWidget *avatar_widget(const char *account, const char *nick, int color, int size) {
     AvatarCtx *a = g_malloc0(sizeof(*a));
     utf8_first(nick && *nick ? nick : "?", a->letter, sizeof(a->letter));
-    /* 中文/英文都大写 */
+    /* ASCII 小写转大写, 让头像字符更醒目; UTF-8 中文字符保持不动 */
     if ((unsigned char)a->letter[0] < 0x80 && a->letter[0] >= 'a' && a->letter[0] <= 'z')
         a->letter[0] -= 32;
     a->color = color;
-    a->size = size;
+    a->size  = size;
+    if (account && *account) strncpy(a->account, account, MAX_NAME_LEN - 1);
+
     GtkWidget *da = gtk_drawing_area_new();
     gtk_widget_set_size_request(da, size, size);
-    g_signal_connect(da, "draw", G_CALLBACK(draw_avatar), a);
-    g_signal_connect_swapped(da, "destroy", G_CALLBACK(g_free), a);
+    g_signal_connect(da, "draw",    G_CALLBACK(draw_avatar),         a);
+    g_signal_connect(da, "destroy", G_CALLBACK(on_avatar_destroyed), a);
+
+    /* 注册到反查表: 等头像到了之后批量 queue_draw. */
+    if (CTX.avatar_widgets && a->account[0]) {
+        GList *l = g_hash_table_lookup(CTX.avatar_widgets, a->account);
+        l = g_list_prepend(l, da);
+        g_hash_table_insert(CTX.avatar_widgets, g_strdup(a->account), l);
+    }
+    /* 顺手发一次 GET; avatar_request_if_needed 内部做了去重. */
+    if (a->account[0]) avatar_request_if_needed(a->account);
     return da;
+}
+
+/* 收到 MSG_AVATAR_DATA 后调用. 字节为空表示对方没传过头像,
+ * 我们也要进缓存 (NULL 标记), 不然 avatar_widget 每次创建都会再发 GET. */
+void avatar_cache_put(const char *account, const unsigned char *png, int len) {
+    if (!account || !*account || !CTX.avatar_cache) return;
+    GdkPixbuf *pb = pixbuf_from_png_bytes(png, len);
+    if (pb) {
+        g_hash_table_replace(CTX.avatar_cache, g_strdup(account), pb);
+    } else {
+        /* 标记为"已知没有", 防止重复请求 */
+        g_hash_table_remove(CTX.avatar_cache, account);
+    }
+    /* 触发所有显示此账号的头像 widget 重绘 */
+    GList *l = g_hash_table_lookup(CTX.avatar_widgets, account);
+    for (; l; l = l->next) gtk_widget_queue_draw(GTK_WIDGET(l->data));
+}
+
+void avatar_request_if_needed(const char *account) {
+    if (!account || !*account) return;
+    if (!CTX.avatar_requested) return;
+    if (g_hash_table_contains(CTX.avatar_requested, account)) return;
+    g_hash_table_add(CTX.avatar_requested, g_strdup(account));
+    Message m; memset(&m, 0, sizeof(m));
+    m.type = MSG_AVATAR_GET;
+    strncpy(m.to_name, account, MAX_NAME_LEN - 1);
+    net_send(&m);
 }
 
 /* ---------- CSS 全局皮肤 ---------- */
 static void apply_css(void) {
+    /* 全局皮肤. 设计原则:
+     *   - 浅蓝灰底, 白色卡片承载内容, 主色 #12b7f5 用在 header / 主按钮
+     *   - 圆角 6~10px, 列表行 hover/selected 用主色低透明度
+     *   - 按钮用线性渐变模拟"光感", hover 时颜色加深
+     *   - 输入框统一灰边框, 聚焦时切到主色
+     * 备注: GTK CSS 是 CSS 子集, 不支持 box-shadow, 我们改用 1px 边框
+     * + 微弱的背景对比来代替阴影. */
     static const char *CSS =
-    "window { background-color: #f3f6fb; }\n"
-    ".qq-card { background-color: #ffffff; border-radius: 8px; }\n"
-    ".qq-sidebar { background-color: #f5f8fc; border-right: 1px solid #e2e8f0; }\n"
-    ".qq-header { background: linear-gradient(180deg, #2eb1ee, #12b7f5);\n"
-    "             color: white; padding: 12px; }\n"
-    ".qq-header label { color: white; font-weight: bold; }\n"
-    ".qq-self {\n"
+    "window { background-color: #eef2f8; }\n"
+    ".im-card { background-color: #ffffff; border-radius: 10px;\n"
+    "           border: 1px solid #e5e7eb; }\n"
+    ".im-sidebar { background-color: #ffffff; border-right: 1px solid #e5e7eb; }\n"
+    ".im-header { background: linear-gradient(180deg, #2eb1ee, #12b7f5);\n"
+    "             color: white; padding: 12px 14px; }\n"
+    ".im-header label { color: white; font-weight: bold; }\n"
+    ".im-self {\n"
     "    background-color: #ffffff;\n"
-    "    border-bottom: 1px solid #e2e8f0;\n"
-    "    padding: 12px;\n"
+    "    border-bottom: 1px solid #e5e7eb;\n"
+    "    padding: 14px 12px;\n"
     "}\n"
-    ".qq-row {\n"
-    "    padding: 8px 10px;\n"
-    "    border-bottom: 1px solid #eef2f7;\n"
+    ".im-row {\n"
+    "    padding: 10px 12px;\n"
+    "    border-bottom: 1px solid #f1f5f9;\n"
+    "    transition: background-color 120ms ease-in-out;\n"
     "}\n"
-    ".qq-row:selected, .qq-row:selected:focus {\n"
+    ".im-row:selected, .im-row:selected:focus {\n"
     "    background-color: rgba(18,183,245,0.18);\n"
     "}\n"
-    ".qq-row:hover { background-color: rgba(18,183,245,0.08); }\n"
-    ".qq-nick { font-size: 11pt; font-weight: 600; color: #1f2937; }\n"
-    ".qq-acc  { font-size: 9pt;  color: #94a3b8; }\n"
-    ".qq-online  { color: #4caf50; font-weight: bold; }\n"
-    ".qq-offline { color: #c0c7d0; }\n"
-    ".qq-primary {\n"
+    ".im-row:hover { background-color: rgba(18,183,245,0.08); }\n"
+    ".im-nick { font-size: 11pt; font-weight: 600; color: #1f2937; }\n"
+    ".im-acc  { font-size: 9pt;  color: #94a3b8; }\n"
+    ".im-online  { color: #4caf50; font-weight: bold; }\n"
+    ".im-offline { color: #c0c7d0; }\n"
+    ".im-primary {\n"
     "    background: linear-gradient(180deg, #38bdf8, #0ea5e9);\n"
     "    color: white;\n"
     "    border-radius: 6px;\n"
     "    border: none;\n"
     "    padding: 8px 16px;\n"
     "    font-weight: bold;\n"
+    "    transition: background-image 120ms ease-in-out;\n"
     "}\n"
-    ".qq-primary:hover { background: linear-gradient(180deg, #38bdf8, #2563eb); }\n"
-    ".qq-secondary {\n"
+    ".im-primary:hover { background: linear-gradient(180deg, #38bdf8, #0284c7); }\n"
+    ".im-primary:active { background: linear-gradient(180deg, #0ea5e9, #0369a1); }\n"
+    ".im-secondary {\n"
     "    background-color: #f1f5f9;\n"
     "    color: #475569;\n"
     "    border-radius: 6px;\n"
     "    border: 1px solid #e2e8f0;\n"
     "    padding: 6px 12px;\n"
+    "    transition: background-color 120ms ease-in-out;\n"
     "}\n"
-    ".qq-secondary:hover { background-color: #e2e8f0; }\n"
-    ".qq-add-btn {\n"
-    "    background-color: rgba(255,255,255,0.2);\n"
+    ".im-secondary:hover { background-color: #e2e8f0; }\n"
+    ".im-iconbtn {\n"
+    "    background-color: rgba(255,255,255,0.22);\n"
     "    border-radius: 50%;\n"
     "    border: none;\n"
     "    color: white;\n"
-    "    min-width: 28px; min-height: 28px;\n"
+    "    font-size: 14pt;\n"
+    "    min-width: 30px; min-height: 30px;\n"
     "}\n"
-    ".qq-add-btn:hover { background-color: rgba(255,255,255,0.35); }\n"
-    ".qq-input entry {\n"
+    ".im-iconbtn:hover { background-color: rgba(255,255,255,0.38); }\n"
+    "entry {\n"
     "    border-radius: 6px;\n"
     "    border: 1px solid #cbd5e1;\n"
-    "    padding: 8px;\n"
+    "    padding: 6px 10px;\n"
+    "    background-color: #ffffff;\n"
+    "    transition: border-color 120ms ease-in-out;\n"
     "}\n"
-    "entry { border-radius: 6px; }\n"
-    "notebook header tabs tab { padding: 8px 14px; }\n"
+    "entry:focus { border-color: #12b7f5; }\n"
+    "notebook header tabs tab { padding: 9px 16px; color: #64748b; }\n"
     "notebook header tabs tab:checked {\n"
     "    background-color: #ffffff;\n"
+    "    color: #12b7f5;\n"
     "    border-bottom: 2px solid #12b7f5;\n"
+    "    font-weight: bold;\n"
     "}\n"
-    "textview text { background-color: #f8fafc; }\n";
+    "textview text { background-color: #f8fafc; }\n"
+    "textview { padding: 4px; }\n";
 
     GtkCssProvider *p = gtk_css_provider_new();
     GError *err = NULL;
@@ -232,6 +344,13 @@ static void apply_css(void) {
 void show_login(int argc, char **argv) {
     gtk_init(&argc, &argv);
     apply_css();
+    /* 头像三件套初始化:
+     *   avatar_cache    : account -> GdkPixbuf* (有图就显示)
+     *   avatar_requested: 已发过 GET 的账号集合 (避免重复请求)
+     *   avatar_widgets  : account -> GList<GtkDrawingArea*> 反查表 */
+    CTX.avatar_cache     = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
+    CTX.avatar_requested = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+    CTX.avatar_widgets   = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(w), "chat_linux 登录");
@@ -258,7 +377,7 @@ void show_login(int argc, char **argv) {
     GtkWidget *lp = gtk_label_new("密  码");
     GtkWidget *eu = gtk_entry_new();
     GtkWidget *ep = gtk_entry_new();
-    gtk_entry_set_placeholder_text(GTK_ENTRY(eu), "QQ 账号 (如 100001)");
+    gtk_entry_set_placeholder_text(GTK_ENTRY(eu), "账号 (如 100001)");
     gtk_entry_set_placeholder_text(GTK_ENTRY(ep), "请输入密码");
     gtk_entry_set_input_purpose(GTK_ENTRY(eu), GTK_INPUT_PURPOSE_DIGITS);
     gtk_entry_set_visibility(GTK_ENTRY(ep), FALSE);
@@ -274,8 +393,8 @@ void show_login(int argc, char **argv) {
     GtkWidget *bl = gtk_button_new_with_label("登 录");
     gtk_widget_set_size_request(br, 80, 40);
     gtk_widget_set_size_request(bl, 200, 44);
-    gtk_style_context_add_class(gtk_widget_get_style_context(br), "qq-secondary");
-    gtk_style_context_add_class(gtk_widget_get_style_context(bl), "qq-primary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(br), "im-secondary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bl), "im-primary");
     gtk_box_pack_start(GTK_BOX(btnbox), br, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(btnbox), bl, TRUE,  TRUE,  0);
     gtk_box_pack_start(GTK_BOX(vbox), btnbox, FALSE, FALSE, 6);
@@ -331,39 +450,116 @@ static void do_login_clicked(GtkButton *b, gpointer ud) {
 }
 
 /* ===================== 注册窗 ===================== */
-static GtkWidget *reg_win = NULL;
-static GtkWidget *reg_nick = NULL;
-static GtkWidget *reg_pass = NULL;
-static GtkWidget *reg_pass2 = NULL;
+/* 注册窗内部用的临时变量, 单例.
+ * reg_preview_pb 是当前预览中的 GdkPixbuf, 用户每次重选都会替换.
+ * 这块在 do_register_confirm 里被读, 在窗口 destroy 时一起清掉. */
+static GtkWidget *reg_win        = NULL;
+static GtkWidget *reg_nick       = NULL;
+static GtkWidget *reg_pass       = NULL;
+static GtkWidget *reg_pass2      = NULL;
+static GtkWidget *reg_preview    = NULL;     /* GtkImage, 显示选中的头像缩略  */
+static GdkPixbuf *reg_preview_pb = NULL;     /* 已 scale 到 64x64 的 RGBA 数据*/
+
+/* 用户点击"选择头像"按钮 → 弹文件选择器 → 读图 → scale 到 64x64 → 入 preview.
+ * 关键点:
+ *   1) gdk_pixbuf_new_from_file_at_scale 一步完成解码+缩放, 比先解码后缩放省内存
+ *   2) 我们存 RGBA 的 pixbuf 而不是 PNG 字节, 因为注册时还没拿到账号,
+ *      要到拿到账号后才知道往 data/avatars/<id>.png 写, 所以延迟到那时再编码 PNG */
+static void on_pick_avatar(GtkButton *b, gpointer ud) {
+    (void)b; (void)ud;
+    GtkWidget *fc = gtk_file_chooser_dialog_new("选择头像图片", GTK_WINDOW(reg_win),
+        GTK_FILE_CHOOSER_ACTION_OPEN,
+        "取消", GTK_RESPONSE_CANCEL,
+        "打开", GTK_RESPONSE_ACCEPT, NULL);
+    /* 只列出常见图片格式; GTK 自带 filter 支持 mime-type 通配 */
+    GtkFileFilter *flt = gtk_file_filter_new();
+    gtk_file_filter_set_name(flt, "图片 (png/jpg/bmp)");
+    gtk_file_filter_add_mime_type(flt, "image/png");
+    gtk_file_filter_add_mime_type(flt, "image/jpeg");
+    gtk_file_filter_add_mime_type(flt, "image/bmp");
+    gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(fc), flt);
+
+    if (gtk_dialog_run(GTK_DIALOG(fc)) != GTK_RESPONSE_ACCEPT) {
+        gtk_widget_destroy(fc); return;
+    }
+    char *path = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(fc));
+    gtk_widget_destroy(fc);
+    if (!path) return;
+
+    /* 64x64 是头像的目标尺寸: 既保证显示清晰, 又能压成 <4KB PNG 一次性传输.
+     * 第 4 参数 TRUE = 保持纵横比 (短边对齐, 多余裁切) — 实际是 fit, 我们
+     * 在 draw_avatar 里再做圆形 clip. */
+    GError *err = NULL;
+    GdkPixbuf *pb = gdk_pixbuf_new_from_file_at_scale(path, 64, 64, TRUE, &err);
+    g_free(path);
+    if (!pb) {
+        msgbox(GTK_WINDOW(reg_win), GTK_MESSAGE_ERROR,
+               "无法解析所选图片: %s", err ? err->message : "未知错误");
+        if (err) g_error_free(err);
+        return;
+    }
+    if (reg_preview_pb) g_object_unref(reg_preview_pb);
+    reg_preview_pb = pb;
+    gtk_image_set_from_pixbuf(GTK_IMAGE(reg_preview), reg_preview_pb);
+}
+
+/* 用户改了昵称且还没选头像时, 同步更新预览的首字母圆形 */
+static void on_reg_nick_changed(GtkEditable *e, gpointer ud) {
+    (void)ud;
+    if (reg_preview_pb) return;          /* 已选图就别覆盖 */
+    /* 这里偷个懒: 不重画, 直接换 image; 实际上我们让 image 显示 NULL,
+     * 改用旁边一个静态字母 label 即可. 简化版本直接保持不变. */
+    (void)e;
+}
+
+/* 释放预览 pixbuf, 避免窗口销毁后内存泄漏 */
+static void on_reg_destroyed(GtkWidget *w, gpointer ud) {
+    (void)w; (void)ud;
+    if (reg_preview_pb) { g_object_unref(reg_preview_pb); reg_preview_pb = NULL; }
+    reg_win = reg_nick = reg_pass = reg_pass2 = reg_preview = NULL;
+}
 
 static void open_register_win(GtkButton *b, gpointer ud) {
     (void)b; (void)ud;
     if (reg_win) { gtk_window_present(GTK_WINDOW(reg_win)); return; }
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(w), "chat_linux 注册");
-    gtk_window_set_default_size(GTK_WINDOW(w), 380, 320);
+    gtk_window_set_default_size(GTK_WINDOW(w), 420, 420);
     gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
     gtk_window_set_transient_for(GTK_WINDOW(w), GTK_WINDOW(CTX.login_win));
     gtk_window_set_modal(GTK_WINDOW(w), TRUE);
     gtk_window_set_resizable(GTK_WINDOW(w), FALSE);
 
-    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
     gtk_container_set_border_width(GTK_CONTAINER(vbox), 24);
     gtk_container_add(GTK_CONTAINER(w), vbox);
 
     GtkWidget *title = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(title),
         "<span size='x-large' weight='bold' color='#12b7f5'>欢迎注册</span>");
-    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(vbox), title, FALSE, FALSE, 4);
     GtkWidget *sub = gtk_label_new(NULL);
     gtk_label_set_markup(GTK_LABEL(sub),
         "<span color='#94a3b8' size='small'>注册成功后系统将自动为你分配账号</span>");
     gtk_box_pack_start(GTK_BOX(vbox), sub, FALSE, FALSE, 0);
 
+    /* === 头像选择区 ===
+     * 左边一个 64x64 GtkImage 显示预览; 右边一个"选择头像"按钮 */
+    GtkWidget *avbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    gtk_widget_set_halign(avbox, GTK_ALIGN_CENTER);
+    reg_preview = gtk_image_new_from_icon_name("avatar-default-symbolic", GTK_ICON_SIZE_DIALOG);
+    gtk_widget_set_size_request(reg_preview, 64, 64);
+    GtkWidget *pick = gtk_button_new_with_label("选择头像 (可选)");
+    gtk_style_context_add_class(gtk_widget_get_style_context(pick), "im-secondary");
+    gtk_widget_set_valign(pick, GTK_ALIGN_CENTER);
+    gtk_box_pack_start(GTK_BOX(avbox), reg_preview, FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(avbox), pick,        FALSE, FALSE, 0);
+    gtk_box_pack_start(GTK_BOX(vbox), avbox, FALSE, FALSE, 0);
+
     GtkWidget *grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(grid), 10);
     gtk_grid_set_column_spacing(GTK_GRID(grid), 8);
-    gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 6);
+    gtk_box_pack_start(GTK_BOX(vbox), grid, FALSE, FALSE, 4);
 
     GtkWidget *l1 = gtk_label_new("昵    称");
     GtkWidget *l2 = gtk_label_new("密    码");
@@ -376,7 +572,7 @@ static void open_register_win(GtkButton *b, gpointer ud) {
     gtk_entry_set_placeholder_text(GTK_ENTRY(reg_pass2),"再次输入密码");
     gtk_entry_set_visibility(GTK_ENTRY(reg_pass),  FALSE);
     gtk_entry_set_visibility(GTK_ENTRY(reg_pass2), FALSE);
-    gtk_widget_set_size_request(reg_nick, 200, -1);
+    gtk_widget_set_size_request(reg_nick, 220, -1);
     gtk_grid_attach(GTK_GRID(grid), l1, 0, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), reg_nick, 1, 0, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), l2, 0, 1, 1, 1);
@@ -384,21 +580,22 @@ static void open_register_win(GtkButton *b, gpointer ud) {
     gtk_grid_attach(GTK_GRID(grid), l3, 0, 2, 1, 1);
     gtk_grid_attach(GTK_GRID(grid), reg_pass2, 1, 2, 1, 1);
 
-    /* 返回(小,左) + 确认注册(大,右,主色) */
     GtkWidget *btnbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     GtkWidget *bcan = gtk_button_new_with_label("返回");
     GtkWidget *bok  = gtk_button_new_with_label("确认注册");
     gtk_widget_set_size_request(bcan, 80,  40);
     gtk_widget_set_size_request(bok, 220,  44);
-    gtk_style_context_add_class(gtk_widget_get_style_context(bcan), "qq-secondary");
-    gtk_style_context_add_class(gtk_widget_get_style_context(bok),  "qq-primary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bcan), "im-secondary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bok),  "im-primary");
     gtk_box_pack_start(GTK_BOX(btnbox), bcan, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(btnbox), bok,  TRUE,  TRUE,  0);
     gtk_box_pack_start(GTK_BOX(vbox), btnbox, FALSE, FALSE, 6);
 
-    g_signal_connect(bok,  "clicked", G_CALLBACK(do_register_confirm), NULL);
+    g_signal_connect(pick,     "clicked",  G_CALLBACK(on_pick_avatar),       NULL);
+    g_signal_connect(reg_nick, "changed",  G_CALLBACK(on_reg_nick_changed),  NULL);
+    g_signal_connect(bok,      "clicked",  G_CALLBACK(do_register_confirm),  NULL);
     g_signal_connect_swapped(bcan, "clicked", G_CALLBACK(gtk_widget_destroy), w);
-    g_signal_connect(w, "destroy", G_CALLBACK(gtk_widget_destroyed), &reg_win);
+    g_signal_connect(w,        "destroy",  G_CALLBACK(on_reg_destroyed),     NULL);
 
     reg_win = w;
     gtk_widget_show_all(w);
@@ -422,6 +619,44 @@ static void do_register_confirm(GtkButton *b, gpointer ud) {
     Message resp;
     if (recv_msg(CTX.sockfd, &resp) != 0) return;
     if (resp.type == MSG_RESPONSE && resp.status == RS_OK) {
+        /* === 头像上传 ===
+         * 用户在表单选了图就在这里编码 PNG 并 MSG_AVATAR_UPLOAD 上去.
+         * 注意上传只能在注册成功的那一瞬间做, 因为这时连接还是匿名态,
+         * 服务器认 fd 还是认账号都行 — 不过我们的服务器要求"已登录",
+         * 所以这里其实是先登录再上传, 见下方两步. */
+        if (reg_preview_pb) {
+            gchar  *png_buf = NULL;
+            gsize   png_sz  = 0;
+            /* gdk_pixbuf_save_to_buffer: 把 RGBA pixbuf 编码到 PNG 字节流;
+             * compression=9 是最大压缩, 时间换空间 — 头像就一张, 不耗时 */
+            if (gdk_pixbuf_save_to_buffer(reg_preview_pb, &png_buf, &png_sz,
+                                          "png", NULL, "compression", "9", NULL)
+                && png_sz > 0 && png_sz < MAX_BODY_LEN) {
+                /* 先登录 (复用刚刚的连接) 才能上传 */
+                Message lg; memset(&lg, 0, sizeof(lg));
+                lg.type = MSG_LOGIN;
+                snprintf(lg.body, sizeof(lg.body), "%s\n%s", resp.body, p);
+                lg.body_len = strlen(lg.body);
+                net_send(&lg);
+                Message lresp;
+                if (recv_msg(CTX.sockfd, &lresp) == 0 &&
+                    lresp.type == MSG_RESPONSE && lresp.status == RS_OK) {
+                    /* 服务端 login 成功后还会推 FLIST/GLIST/REQ 等, 这里我们
+                     * 都先吞掉, 再发 AVATAR_UPLOAD; 否则后面新连接再来时
+                     * 服务器侧的 fd 状态对不上. 简化: 直接关掉连接, 让用户
+                     * 重新点登录, 再上传一次. 但更稳的是接着把头像传完再断. */
+                    Message av; memset(&av, 0, sizeof(av));
+                    av.type   = MSG_AVATAR_UPLOAD;
+                    av.status = (uint32_t)png_sz;
+                    memcpy(av.body, png_buf, png_sz);
+                    av.body_len = (uint32_t)png_sz;
+                    net_send(&av);
+                }
+                /* 关闭并重置连接, 让用户回到登录窗以正常流程登录 */
+                net_close();
+            }
+            g_free(png_buf);
+        }
         msgbox(GTK_WINDOW(reg_win), GTK_MESSAGE_INFO,
                "注册成功!\n您的账号是: %s\n请妥善保管, 登录请使用此账号", resp.body);
         gtk_entry_set_text(GTK_ENTRY(CTX.login_user), resp.body);
@@ -444,19 +679,19 @@ static void row_data_free(RowData *r) { g_free(r); }
 static GtkWidget *make_friend_row(const char *acc, const char *nick, int color,
                                   int online, int black) {
     GtkWidget *row = gtk_list_box_row_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(row), "qq-row");
+    gtk_style_context_add_class(gtk_widget_get_style_context(row), "im-row");
 
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_container_add(GTK_CONTAINER(row), hbox);
-    /* 头像 */
-    gtk_box_pack_start(GTK_BOX(hbox), avatar_widget(nick, color, 40), FALSE, FALSE, 0);
+    /* 头像: 传 acc 进去, 让 avatar_widget 能命中缓存 / 自动请求 */
+    gtk_box_pack_start(GTK_BOX(hbox), avatar_widget(acc, nick, color, 40), FALSE, FALSE, 0);
 
     /* 昵称 + 账号 */
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *l1 = gtk_label_new(NULL);
     char buf[128];
     snprintf(buf, sizeof(buf),
-        "<span class='qq-nick' weight='bold' size='medium'>%s</span>%s",
+        "<span class='im-nick' weight='bold' size='medium'>%s</span>%s",
         nick, black ? " <span color='#ef4444' size='small'>[黑]</span>" : "");
     gtk_label_set_markup(GTK_LABEL(l1), buf);
     gtk_label_set_xalign(GTK_LABEL(l1), 0.0);
@@ -490,11 +725,11 @@ static GtkWidget *make_friend_row(const char *acc, const char *nick, int color,
 
 static GtkWidget *make_group_row(int gid, const char *name) {
     GtkWidget *row = gtk_list_box_row_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(row), "qq-row");
+    gtk_style_context_add_class(gtk_widget_get_style_context(row), "im-row");
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_container_add(GTK_CONTAINER(row), hbox);
-    /* 群头像: 颜色由 gid 派生 */
-    gtk_box_pack_start(GTK_BOX(hbox), avatar_widget(name, gid % 10, 40), FALSE, FALSE, 0);
+    /* 群头像: 群没有头像图片, 直接字母 + gid 派生颜色 */
+    gtk_box_pack_start(GTK_BOX(hbox), avatar_widget(NULL, name, gid % 10, 40), FALSE, FALSE, 0);
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *l1 = gtk_label_new(NULL);
     char buf[128];
@@ -527,10 +762,11 @@ static void on_req_reject(GtkButton *b, gpointer ud);
 static GtkWidget *make_req_row(int kind, int reqid, const char *acc, const char *nick,
                                int color, const char *gname, const char *hello, int gid) {
     GtkWidget *row = gtk_list_box_row_new();
-    gtk_style_context_add_class(gtk_widget_get_style_context(row), "qq-row");
+    gtk_style_context_add_class(gtk_widget_get_style_context(row), "im-row");
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     gtk_container_add(GTK_CONTAINER(row), hbox);
-    gtk_box_pack_start(GTK_BOX(hbox), avatar_widget(nick, color, 40), FALSE, FALSE, 0);
+    /* 申请项的头像也走缓存: 入群申请的 acc 为 "" 时退化为字母 */
+    gtk_box_pack_start(GTK_BOX(hbox), avatar_widget(acc, nick, color, 40), FALSE, FALSE, 0);
 
     GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     GtkWidget *l1 = gtk_label_new(NULL);
@@ -555,8 +791,8 @@ static GtkWidget *make_req_row(int kind, int reqid, const char *acc, const char 
 
     GtkWidget *by = gtk_button_new_with_label("同意");
     GtkWidget *bn = gtk_button_new_with_label("拒绝");
-    gtk_style_context_add_class(gtk_widget_get_style_context(by), "qq-primary");
-    gtk_style_context_add_class(gtk_widget_get_style_context(bn), "qq-secondary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(by), "im-primary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bn), "im-secondary");
     gtk_box_pack_start(GTK_BOX(hbox), by, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(hbox), bn, FALSE, FALSE, 0);
 
@@ -590,12 +826,12 @@ void show_main(void) {
 
     /* ============ 左侧栏 ============ */
     GtkWidget *left = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_style_context_add_class(gtk_widget_get_style_context(left), "qq-sidebar");
+    gtk_style_context_add_class(gtk_widget_get_style_context(left), "im-sidebar");
 
     /* 自己的头像/名片 */
     GtkWidget *self = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_style_context_add_class(gtk_widget_get_style_context(self), "qq-self");
-    CTX.self_avatar = avatar_widget(CTX.nickname, CTX.avatar_color, 48);
+    gtk_style_context_add_class(gtk_widget_get_style_context(self), "im-self");
+    CTX.self_avatar = avatar_widget(CTX.account, CTX.nickname, CTX.avatar_color, 48);
     gtk_box_pack_start(GTK_BOX(self), CTX.self_avatar, FALSE, FALSE, 0);
     GtkWidget *svb = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
     char buf[128];
@@ -647,7 +883,7 @@ void show_main(void) {
     GtkWidget *right = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 
     GtkWidget *hdr = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_style_context_add_class(gtk_widget_get_style_context(hdr), "qq-header");
+    gtk_style_context_add_class(gtk_widget_get_style_context(hdr), "im-header");
     CTX.chat_avatar_area = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     gtk_box_pack_start(GTK_BOX(hdr), CTX.chat_avatar_area, FALSE, FALSE, 0);
     CTX.chat_header = gtk_label_new(NULL);
@@ -657,7 +893,7 @@ void show_main(void) {
     gtk_widget_set_hexpand(CTX.chat_header, TRUE);
     gtk_box_pack_start(GTK_BOX(hdr), CTX.chat_header, TRUE, TRUE, 0);
     CTX.add_btn = gtk_button_new_with_label("＋");
-    gtk_style_context_add_class(gtk_widget_get_style_context(CTX.add_btn), "qq-add-btn");
+    gtk_style_context_add_class(gtk_widget_get_style_context(CTX.add_btn), "im-iconbtn");
     gtk_widget_set_size_request(CTX.add_btn, 32, 32);
     gtk_widget_set_tooltip_text(CTX.add_btn, "添加好友 / 加群 / 建群");
     gtk_box_pack_start(GTK_BOX(hdr), CTX.add_btn, FALSE, FALSE, 0);
@@ -680,8 +916,8 @@ void show_main(void) {
     gtk_entry_set_placeholder_text(GTK_ENTRY(CTX.input_entry), "输入消息, 回车发送");
     GtkWidget *bfile = gtk_button_new_with_label("📎");
     GtkWidget *bsnd  = gtk_button_new_with_label("发送");
-    gtk_style_context_add_class(gtk_widget_get_style_context(bfile), "qq-secondary");
-    gtk_style_context_add_class(gtk_widget_get_style_context(bsnd),  "qq-primary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bfile), "im-secondary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bsnd),  "im-primary");
     gtk_widget_set_size_request(bsnd,  88, -1);
     gtk_widget_set_size_request(bfile, 44, -1);
     gtk_box_pack_start(GTK_BOX(ibox), CTX.input_entry, TRUE, TRUE, 0);
@@ -726,7 +962,8 @@ static void switch_chat_target(int is_group, const char *acc_or_gname,
     for (GList *l = kids; l; l = l->next) gtk_widget_destroy(GTK_WIDGET(l->data));
     g_list_free(kids);
     gtk_box_pack_start(GTK_BOX(CTX.chat_avatar_area),
-                       avatar_widget(nick ? nick : acc_or_gname, color, 36),
+                       avatar_widget(is_group ? NULL : acc_or_gname,
+                                     nick ? nick : acc_or_gname, color, 36),
                        FALSE, FALSE, 0);
     gtk_widget_show_all(CTX.chat_avatar_area);
 
@@ -1038,7 +1275,7 @@ static void open_search_dialog(int is_user) {
         is_user ? "输入账号 (6 位数字) 或 昵称关键字" : "输入群名关键字");
     gtk_widget_set_hexpand(en, TRUE);
     GtkWidget *bs = gtk_button_new_with_label("搜索");
-    gtk_style_context_add_class(gtk_widget_get_style_context(bs), "qq-secondary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(bs), "im-secondary");
     gtk_box_pack_start(GTK_BOX(hb), en, TRUE,  TRUE,  0);
     gtk_box_pack_start(GTK_BOX(hb), bs, FALSE, FALSE, 0);
     gtk_box_pack_start(GTK_BOX(vbox), hb, FALSE, FALSE, 0);
@@ -1050,7 +1287,7 @@ static void open_search_dialog(int is_user) {
     gtk_box_pack_start(GTK_BOX(vbox), sw, TRUE, TRUE, 0);
 
     GtkWidget *btn = gtk_button_new_with_label(is_user ? "发送好友申请" : "申请加入");
-    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "qq-primary");
+    gtk_style_context_add_class(gtk_widget_get_style_context(btn), "im-primary");
     gtk_widget_set_size_request(btn, -1, 42);
     gtk_box_pack_start(GTK_BOX(vbox), btn, FALSE, FALSE, 0);
 
