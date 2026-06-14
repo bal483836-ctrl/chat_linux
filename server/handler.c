@@ -173,6 +173,15 @@ void *client_thread(void *arg) {
             if (split_userpass(m.body, nick, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
             int id = db_register(nick, p);
             if (id < 0) { resp(fd, RS_FAIL, "注册失败"); break; }
+            /* === 自动加 mock 好友 ===
+             * 把 sql/init.sql 里预置的"小助手 / 新手指南"两位补成新用户的
+             * 初始好友, 让登录后好友列表不至于空荡荡, 也方便答辩演示头像/
+             * 在线状态/会话等基础功能. 没拿到 id (例如老库里没建这俩) 就跳过. */
+            static const char *DEMOS[] = {"小助手", "新手指南"};
+            for (int i = 0; i < 2; ++i) {
+                int demo_id = db_user_id_by_nick(DEMOS[i]);
+                if (demo_id > 0 && demo_id != id) db_friend_add(id, demo_id);
+            }
             /* 返回分配的账号 (字符串) */
             char acc[16]; snprintf(acc, sizeof(acc), "%d", id + ACCOUNT_BASE);
             resp(fd, RS_OK, acc);

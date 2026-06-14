@@ -104,3 +104,19 @@ CREATE TABLE IF NOT EXISTS group_join_requests (
     FOREIGN KEY (group_id) REFERENCES chat_groups(id) ON DELETE CASCADE,
     FOREIGN KEY (user_id)  REFERENCES users(id)       ON DELETE CASCADE
 ) ENGINE=InnoDB;
+
+/* ============================================================
+ *  默认演示账号 (mock 好友)
+ *
+ *  目的: 新用户注册后好友列表不要空荡荡的; 自动加这两位作为初始好友.
+ *  - "小助手"  - 演示头像/会话效果
+ *  - "新手指南" - 演示离线消息/通知
+ *  密码统一是 SHA1('demo'); 任何人都能登录去看. 仅用于教学演示.
+ *
+ *  服务端 handler.c::MSG_REGISTER 处理完 db_register 之后,
+ *  会调用 db_user_id_by_nick() 查这两个 id, 然后 db_friend_add(),
+ *  让新注册的用户立刻看到他们.
+ * ============================================================ */
+INSERT IGNORE INTO users(nickname, password, avatar_color) VALUES
+    ('小助手',   SHA1('demo'), 5),
+    ('新手指南', SHA1('demo'), 3);

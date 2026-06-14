@@ -62,6 +62,25 @@ int db_user_id_by_account(const char *account) {
     return ok;
 }
 
+/* 按昵称查 user_id. 昵称可重复, 这里返回第一条匹配; 主要用于查找
+ * sql/init.sql 里的"小助手 / 新手指南"两个 mock 好友的 id. */
+int db_user_id_by_nick(const char *nick) {
+    char en[128]; esc(nick, en, sizeof(en));
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+        "SELECT id FROM users WHERE nickname='%s' ORDER BY id ASC LIMIT 1", en);
+    LOCK();
+    int id = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return id;
+}
+
 int db_register(const char *nickname, const char *pass) {
     char hash[64]; sha1_hex(pass, hash);
     char en[128]; esc(nickname, en, sizeof(en));

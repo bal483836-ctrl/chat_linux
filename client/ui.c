@@ -313,6 +313,20 @@ static void apply_css(void) {
     "    min-width: 30px; min-height: 30px;\n"
     "}\n"
     ".im-iconbtn:hover { background-color: rgba(255,255,255,0.38); }\n"
+    /* 自卡片上的"添加"按钮: 白底场景, 用主色实心圆 + 白色加号 */
+    ".im-addbtn-self {\n"
+    "    background: linear-gradient(180deg, #38bdf8, #0ea5e9);\n"
+    "    color: white;\n"
+    "    border-radius: 50%;\n"
+    "    border: none;\n"
+    "    font-weight: bold;\n"
+    "    font-size: 14pt;\n"
+    "    min-width: 36px; min-height: 36px;\n"
+    "    padding: 0;\n"
+    "    transition: background-image 120ms ease-in-out;\n"
+    "}\n"
+    ".im-addbtn-self:hover { background: linear-gradient(180deg, #38bdf8, #0284c7); }\n"
+    ".im-addbtn-self:active { background: linear-gradient(180deg, #0ea5e9, #0369a1); }\n"
     "entry {\n"
     "    border-radius: 6px;\n"
     "    border: 1px solid #cbd5e1;\n"
@@ -354,7 +368,9 @@ void show_login(int argc, char **argv) {
 
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(w), "chat_linux 登录");
-    gtk_window_set_default_size(GTK_WINDOW(w), 360, 280);
+    /* 窗体放大一些, 视觉更舒展; 也给后续往里加 "记住密码" / "找回密码"
+     * 之类的功能留点空间 */
+    gtk_window_set_default_size(GTK_WINDOW(w), 460, 380);
     gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
     gtk_window_set_resizable(GTK_WINDOW(w), FALSE);
     g_signal_connect(w, "delete-event", G_CALLBACK(on_login_close), NULL);
@@ -524,7 +540,8 @@ static void open_register_win(GtkButton *b, gpointer ud) {
     if (reg_win) { gtk_window_present(GTK_WINDOW(reg_win)); return; }
     GtkWidget *w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
     gtk_window_set_title(GTK_WINDOW(w), "chat_linux 注册");
-    gtk_window_set_default_size(GTK_WINDOW(w), 420, 420);
+    /* 注册窗有头像选择 + 三个输入框, 比登录窗高一些 */
+    gtk_window_set_default_size(GTK_WINDOW(w), 520, 540);
     gtk_window_set_position(GTK_WINDOW(w), GTK_WIN_POS_CENTER);
     gtk_window_set_transient_for(GTK_WINDOW(w), GTK_WINDOW(CTX.login_win));
     gtk_window_set_modal(GTK_WINDOW(w), TRUE);
@@ -847,6 +864,17 @@ void show_main(void) {
     gtk_box_pack_start(GTK_BOX(svb), CTX.self_acc_lbl,  FALSE, FALSE, 0);
     gtk_widget_set_hexpand(svb, TRUE);
     gtk_box_pack_start(GTK_BOX(self), svb, TRUE, TRUE, 0);
+
+    /* === "+" 添加按钮 ===
+     * 原本放在右上 header 上, 用户反馈不顺手, 这里挪到自己头像卡的右侧.
+     * 蓝色实心圆 + 白色"＋", 在白底自卡片上视觉权重正好. */
+    CTX.add_btn = gtk_button_new_with_label("＋");
+    gtk_style_context_add_class(gtk_widget_get_style_context(CTX.add_btn), "im-addbtn-self");
+    gtk_widget_set_size_request(CTX.add_btn, 36, 36);
+    gtk_widget_set_valign(CTX.add_btn, GTK_ALIGN_CENTER);
+    gtk_widget_set_tooltip_text(CTX.add_btn, "添加好友 / 加群 / 建群");
+    gtk_box_pack_end(GTK_BOX(self), CTX.add_btn, FALSE, FALSE, 0);
+
     gtk_box_pack_start(GTK_BOX(left), self, FALSE, FALSE, 0);
 
     /* 三个 tab */
@@ -892,11 +920,7 @@ void show_main(void) {
     gtk_label_set_xalign(GTK_LABEL(CTX.chat_header), 0.0);
     gtk_widget_set_hexpand(CTX.chat_header, TRUE);
     gtk_box_pack_start(GTK_BOX(hdr), CTX.chat_header, TRUE, TRUE, 0);
-    CTX.add_btn = gtk_button_new_with_label("＋");
-    gtk_style_context_add_class(gtk_widget_get_style_context(CTX.add_btn), "im-iconbtn");
-    gtk_widget_set_size_request(CTX.add_btn, 32, 32);
-    gtk_widget_set_tooltip_text(CTX.add_btn, "添加好友 / 加群 / 建群");
-    gtk_box_pack_start(GTK_BOX(hdr), CTX.add_btn, FALSE, FALSE, 0);
+    /* + 按钮已经挪到左侧自己头像旁边了, 这里不再创建. */
     gtk_box_pack_start(GTK_BOX(right), hdr, FALSE, FALSE, 0);
 
     GtkWidget *tv = gtk_text_view_new();
