@@ -28,8 +28,13 @@ CLI_SRC := $(SRC_COMMON) client/main.c client/net.c client/ui.c
 CLI_PKG := $(shell pkg-config --cflags --libs gtk+-3.0)
 CLI_LD  := -lpthread -lm $(CLI_PKG)
 
-.PHONY: all server client clean
+.PHONY: all server client web clean
 all: server client
+
+# --- web 原型桥接 (浏览器 <-> chat_server) ---
+web:
+	@chmod +x scripts/run_web.sh
+	scripts/run_web.sh
 
 $(BIN):
 	@mkdir -p $(BIN)

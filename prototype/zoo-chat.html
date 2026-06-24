@@ -41,6 +41,9 @@ input,textarea{font:inherit;}
 .tb-spacer{flex:1;}
 .tb-win{display:flex;gap:14px;color:rgba(255,255,255,.85);font-size:14px;}
 .tb-win span{cursor:pointer;}
+.net-status{font-size:12px;font-weight:800;padding:4px 12px;border-radius:12px;cursor:default;}
+.net-status.on{background:rgba(132,207,78,.3);color:#eaffd8;}
+.net-status.off{background:rgba(0,0,0,.18);color:rgba(255,255,255,.85);}
 .stage{flex:1;position:relative;overflow:hidden;}
 
 /* ===== 头像 (本地 3D 图) ===== */
@@ -336,6 +339,7 @@ input,textarea{font:inherit;}
     <div class="tb-dots"><i class="r"></i><i class="y"></i><i class="g"></i></div>
     <div class="tb-logo">zoo</div>
     <div class="tb-spacer"></div>
+    <div class="net-status off" id="netStatus">连接中…</div>
     <div class="tb-win"><span title="最小化">—</span><span title="最大化">▢</span><span title="关闭" onclick="toast('（原型）关闭窗口')">✕</span></div>
   </div>
 
@@ -491,6 +495,7 @@ input,textarea{font:inherit;}
   <div class="toast" id="toast"></div>
 </div>
 
+<script src="zoo-net.js"></script>
 <script>
 /* ===== 3D 头像资源(本地) ===== */
 const ASSET=k=>'assets/'+k+'.png';
@@ -572,20 +577,31 @@ function buildRegAvatars(){const box=document.getElementById('regAvatars');box.i
     el.onclick=()=>{regPick=a.key;buildRegAvatars();};box.appendChild(el);});}
 function enterApp(){const lg=document.getElementById('login');lg.style.opacity='0';
   setTimeout(()=>{lg.classList.add('hidden');const a=document.getElementById('app');a.style.display='flex';a.style.opacity='0';a.style.transition='opacity .4s';void a.offsetWidth;a.style.opacity='1';},500);}
-function doLogin(){const e=document.getElementById('lgEmail').value.trim(),p=document.getElementById('lgPwd').value.trim();
-  if(!e||!p){document.getElementById('lgErr').textContent='请填写账号和密码';return;}enterApp();}
-function doRegister(){const n=document.getElementById('rgName').value.trim(),e=document.getElementById('rgEmail').value.trim(),
+async function doLogin(){const acc=document.getElementById('lgEmail').value.trim(),p=document.getElementById('lgPwd').value.trim();
+  if(!acc||!p){document.getElementById('lgErr').textContent='请填写账号和密码';return;}
+  if(LIVE&&online){const r=await net.login(acc,p);
+    if(r.status!==ZooNet.RS.OK){document.getElementById('lgErr').textContent=r.body||'账号或密码错误';return;}
+    const parts=(r.body||'').split('\n');myAccount=parts[0];ME.zoo=parts[0];if(parts[1])ME.name=parts[1];
+    liveResetData();refreshMe();renderChatList();renderContacts();enterApp();return;}
+  enterApp();}
+async function doRegister(){const n=document.getElementById('rgName').value.trim(),e=document.getElementById('rgEmail').value.trim(),
   b=document.getElementById('rgBirth').value,p=document.getElementById('rgPwd').value,p2=document.getElementById('rgPwd2').value;
   const err=document.getElementById('rgErr');
   if(!n){err.textContent='请填写昵称';return;}
   if(!e||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)){err.textContent='请输入有效邮箱';return;}
   if(p.length<6){err.textContent='密码至少 6 位';return;}
   if(p!==p2){err.textContent='两次密码不一致';return;}
+  if(LIVE&&online){const r=await net.register(n,p);
+    if(r.status!==ZooNet.RS.OK){err.textContent=r.body||'注册失败(昵称可能已被占用)';return;}
+    myAccount=r.body;const lr=await net.login(r.body,p);
+    ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=r.body;ME.birth=b||ME.birth;
+    if(lr.status===ZooNet.RS.OK){const pp=(lr.body||'').split('\n');ME.name=pp[1]||n;}
+    liveResetData();refreshMe();renderChatList();renderContacts();toast('账号 '+r.body+' 创建成功 🎉');enterApp();return;}
   ME.name=n;ME.birth=b||ME.birth;ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);
   ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=(e.split('@')[0]||'zoo')+'_'+Math.floor(Math.random()*900+100);
   refreshMe();toast('账号创建成功 🎉');enterApp();}
 function refreshMe(){document.getElementById('navMeAv').innerHTML=avHTML(ME,'lg',true);document.getElementById('navMeName').textContent=ME.name.slice(0,4);}
-function logout(){location.reload();}
+function logout(){try{if(net&&online)net.logout();}catch(e){}location.reload();}
 
 /* ===== Tab / + 菜单 ===== */
 function switchTab(tab){document.querySelectorAll('.nav-ic[data-tab]').forEach(b=>b.classList.toggle('on',b.dataset.tab===tab));
@@ -626,7 +642,9 @@ function openSingleChatByFriend(f){let c=chats.find(x=>x.type==='single'&&x.frie
 function openChat(id){currentChat=id;const c=chats.find(x=>x.id===id);if(!c)return;showPage('chat');currentChat=id;
   document.getElementById('chatTitle').textContent=c.name;document.getElementById('chatSub').textContent=c.sub;
   document.getElementById('headAv').innerHTML=avHTML(c,'md');
-  c.unread=0;renderChatList();updatePip();renderMessages();closeInfo();closeEmoji();}
+  c.unread=0;renderChatList();updatePip();renderMessages();liveOpen(c);closeInfo();closeEmoji();}
+function liveOpen(c){if(!(LIVE&&online))return;conversations[c.id]=[];renderMessages();
+  if(c.type==='group'){net.groupMembers(c.gid);net.historyGroup(c.gid);}else{net.historyPriv(c.friendId);}}
 function renderMessages(){const box=document.getElementById('msgs');const list=conversations[currentChat]||[];const c=chats.find(x=>x.id===currentChat);
   box.innerHTML='';let lastSep=null;
   list.forEach(m=>{const sep=fmtTime(m.time,'hm');if(sep!==lastSep){const s=document.createElement('div');s.className='time-sep';s.textContent=fmtTime(m.time,'daymin');lastSep=sep;box.appendChild(s);}box.appendChild(buildMsg(m,c));});
@@ -647,7 +665,10 @@ function buildMsg(m,c){if(m.recalled){const r=document.createElement('div');r.cl
 function pushMsg(msg){if(!conversations[currentChat])conversations[currentChat]=[];msg.id=Date.now()+Math.random();msg.time=new Date();conversations[currentChat].push(msg);renderMessages();
   const c=chats.find(x=>x.id===currentChat);if(c){c.preview=previewOf(msg);c.time='刚刚';renderChatList();}}
 function previewOf(m){if(m.type==='text')return (m.from==='me'?'':userById(m.from).name+': ')+m.text;if(m.type==='file')return '[文件] '+m.text;if(m.type==='image')return '[图片]';return '';}
-function sendText(){const inp=document.getElementById('msgInput');const v=inp.value.replace(/\s+$/,'');if(!v.trim())return;pushMsg({from:'me',type:'text',text:v});inp.value='';autoGrow(inp);closeEmoji();maybeReply();}
+function sendText(){const inp=document.getElementById('msgInput');const v=inp.value.replace(/\s+$/,'');if(!v.trim())return;
+  const c=chats.find(x=>x.id===currentChat);
+  if(LIVE&&online&&c){if(c.type==='group')net.sendGroup(c.gid,v);else net.sendPrivate(c.friendId,v);pushMsg({from:'me',type:'text',text:v});inp.value='';autoGrow(inp);closeEmoji();return;}
+  pushMsg({from:'me',type:'text',text:v});inp.value='';autoGrow(inp);closeEmoji();maybeReply();}
 function msgKey(e){if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendText();}}
 function autoGrow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeight,132)+'px';}
 function maybeReply(){const c=chats.find(x=>x.id===currentChat);if(!c)return;const fromId=c.type==='group'?(c.members?c.members[0]:'dog'):(c.friendId||'dog');
@@ -736,8 +757,8 @@ function saveRemark(){const c=chats.find(x=>x.id===currentChat);c.remark=documen
 function togglePin(){const c=chats.find(x=>x.id===currentChat);c.pinned=!c.pinned;renderChatList();renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}
 function clearChat(){conversations[currentChat]=[];renderMessages();toast('聊天记录已清空 🧹');}
 function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);renderChatList();toast('已退出群聊');}
-function blockFriend(fid){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已加入黑名单 🚫');}
-function deleteFriend(fid){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已删除好友 🗑️');}
+function blockFriend(fid){if(LIVE&&online)net.blackAdd(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已加入黑名单 🚫');}
+function deleteFriend(fid){if(LIVE&&online)net.friendDel(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已删除好友 🗑️');}
 
 /* --- profile (页内, 含全身 3D 角色 + 动作) --- */
 function openProfilePanel(u){panelStack=[];openPanel('profile',{user:u});}
@@ -804,7 +825,10 @@ function renderSearchBody(){const box=document.getElementById('seBody');if(!box)
 function jumpTo(mid){const row=document.querySelector('.msg[data-id="'+mid+'"]');if(row){row.scrollIntoView({behavior:'smooth',block:'center'});const b=row.querySelector('.bubble');if(b){b.classList.remove('flash');void b.offsetWidth;b.classList.add('flash');}}}
 
 /* ===== 加好友(页内) ===== */
+function liveFriendReq(acc){net.friendReq(acc,'交个朋友吧~').then(r=>toast(r.body||'已发送好友申请'));}
 function searchStranger(v){const box=document.getElementById('afResult');v=v.trim();if(!v){box.innerHTML='';return;}
+  if(LIVE&&online){if(!/^\d{6,}$/.test(v)){box.innerHTML='<div class="res-empty">实时模式：请输入对方 6 位以上 zoo 账号</div>';return;}
+    box.innerHTML=`<div class="search-res"><div class="av av-md c-cat"><span class="fb">👤</span></div><div class="nm"><div class="n">账号 ${esc(v)}</div><div class="z">向 TA 发送好友申请</div></div><button class="pill green sm" onclick="liveFriendReq('${esc(v)}')">申请</button></div>`;return;}
   const pool=[...strangers,...friends];const hit=pool.find(p=>p.name.includes(v)||(p.zoo&&p.zoo.includes(v)))||strangers[0];const already=friends.some(f=>f.id===hit.id);
   box.innerHTML=`<div class="search-res">${avHTML(hit,'md')}<div class="nm"><div class="n">${esc(hit.name)}</div><div class="z">zoo 号: ${hit.zoo}</div></div>${already?'<span style="color:var(--ink-soft);font-weight:800;font-size:13px">已是好友</span>':`<button class="pill green sm" onclick="addNewFriend('${hit.id}')">添加</button>`}</div>`;}
 function addNewFriend(id){let u=strangers.find(s=>s.id===id);if(u){strangers.splice(strangers.indexOf(u),1);}else{u=userById(id);}
@@ -816,7 +840,10 @@ let cgSel=new Set();
 function buildCreateGroup(){cgSel=new Set();document.getElementById('cgName').value='';document.getElementById('cgCount').textContent=0;const box=document.getElementById('cgList');box.innerHTML='';
   friends.forEach(f=>{const el=document.createElement('div');el.className='invite-row';el.onclick=()=>{cgSel.has(f.id)?cgSel.delete(f.id):cgSel.add(f.id);el.querySelector('.pick').classList.toggle('on');document.getElementById('cgCount').textContent=cgSel.size+1;};
     el.innerHTML=`${avHTML(f,'md')}<span class="nm">${esc(f.name)}</span><div class="pick">✓</div>`;box.appendChild(el);});}
-function confirmCreateGroup(){if(cgSel.size<1){toast('至少选择 1 位伙伴~');return;}let name=document.getElementById('cgName').value.trim();const ids=[...cgSel];if(!name)name=ids.map(i=>userById(i).name).slice(0,3).join('、')+'…';
+function confirmCreateGroup(){
+  if(LIVE&&online){const name=document.getElementById('cgName').value.trim()||'新群聊';
+    net.groupCreate(name).then(r=>{if(r.status===ZooNet.RS.OK){net.groupList();toast('群聊已创建(群号 '+r.body+') 🎉');switchTab('msg');showPage('empty');}else toast('建群失败');});return;}
+  if(cgSel.size<1){toast('至少选择 1 位伙伴~');return;}let name=document.getElementById('cgName').value.trim();const ids=[...cgSel];if(!name)name=ids.map(i=>userById(i).name).slice(0,3).join('、')+'…';
   const id='g_'+Date.now();chats.unshift(Object.assign(mk(id,name,'cat'),{type:'group',sub:(ids.length+1)+' 位成员',time:'刚刚',preview:'群聊已创建',unread:0,members:[...ids]}));
   groupNotice[id]='欢迎来到「'+name+'」，一起开黑吧！🐾';conversations[id]=[];switchTab('msg');openChat(id);toast('群聊已创建 🎉');}
 
@@ -832,9 +859,62 @@ function updatePip(){const total=chats.reduce((a,c)=>a+(c.unread||0),0);const p=
 document.addEventListener('click',e=>{const pop=document.getElementById('emojiPop');if(pop&&pop.classList.contains('show')&&!pop.contains(e.target)&&!e.target.closest('.tool-ic'))closeEmoji();
   if(!e.target.closest('#addMenu')&&!e.target.closest('.head-add'))hideAddMenu();});
 
+/* ============================================================
+   实时后端连接层 (bridge.js -> chat_server)
+   - 经 http(s) 由 bridge 提供页面时启用 LIVE；file:// 双击则为演示模式
+   ============================================================ */
+const LIVE=(location.protocol==='http:'||location.protocol==='https:');
+let net=null,online=false,myAccount=null;
+function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
+function liveStatus(txt,ok){const el=document.getElementById('netStatus');if(el){el.textContent=txt;el.className='net-status '+(ok?'on':'off');}}
+async function initLive(){
+  if(!LIVE||typeof ZooNet==='undefined'){liveStatus('演示模式',false);return;}
+  const url=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/';
+  net=new ZooNet(url);bindLive();
+  try{await net.connect();online=true;liveStatus('已连服务器 ✅',true);}
+  catch(e){online=false;liveStatus('演示模式(未连服务器)',false);}
+}
+function bindLive(){const T=ZooNet.T;
+  net.on(T.FRIEND_LIST,m=>applyFriendList(m.body));
+  net.on(T.GROUP_LIST,m=>applyGroupList(m.body));
+  net.on(T.GROUP_MEMBERS,m=>applyMembers(m));
+  net.on(T.PRIVATE_CHAT,m=>incomingMsg('priv',m));
+  net.on(T.GROUP_CHAT,m=>incomingMsg('grp',m));
+  net.on(T.NOTIFY_ONLINE,m=>setOnlineState(m.from_name,true));
+  net.on(T.NOTIFY_OFFLINE,m=>setOnlineState(m.from_name,false));
+  net.on('close',()=>{online=false;liveStatus('连接已断开',false);});}
+function liveResetData(){friends.length=0;strangers.length=0;chats.length=0;Object.keys(conversations).forEach(k=>delete conversations[k]);}
+function ensureUser(account,nick,color){if(account===myAccount)return ME;
+  let u=friends.find(f=>f.id===account)||strangers.find(s=>s.id===account);
+  if(!u){u=mk(account,nick||account,colorAnimal(color),{zoo:account,online:true});strangers.push(u);}else if(nick&&!u.name)u.name=nick;return u;}
+function applyFriendList(body){ZooNet.parseFriendList(body).forEach(f=>{if(f.black)return;
+  let u=friends.find(x=>x.id===f.account);
+  if(!u){u=mk(f.account,f.nick,colorAnimal(f.color),{zoo:f.account,online:f.online});friends.push(u);}else{u.name=f.nick;u.online=f.online;}});
+  renderContacts();}
+function applyGroupList(body){ZooNet.parseGroupList(body).forEach(g=>{let c=chats.find(x=>x.gid===g.gid);
+  if(!c){c=Object.assign(mk('g'+g.gid,g.name,'cat'),{type:'group',gid:g.gid,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}else c.name=g.name;});
+  renderChatList();}
+function applyMembers(m){const c=chats.find(x=>x.gid===m.group_id);if(!c)return;const list=ZooNet.parseMembers(m.body);
+  c.members=list.map(x=>{ensureUser(x.account,x.nick,x.color);return x.account;});c.sub=list.length+' 位成员';
+  if(currentChat===c.id){document.getElementById('chatSub').textContent=c.sub;if(panelStack.length)renderPanel();}}
+function ensureSingleChat(account,nick,color){let c=chats.find(x=>x.type==='single'&&x.friendId===account);
+  if(!c){const u=ensureUser(account,nick,color);c=Object.assign(mk('c_'+account,u.name,u.animal),{type:'single',sub:u.online?'在线':'离线',time:'',preview:'',unread:0,friendId:account});chats.push(c);conversations[c.id]=[];}return c;}
+function incomingMsg(kind,m){ensureUser(m.from_name,m.from_nick,0);let c;
+  if(kind==='grp'){c=chats.find(x=>x.gid===m.group_id);if(!c){c=Object.assign(mk('g'+m.group_id,'群聊 '+m.group_id,'cat'),{type:'group',gid:m.group_id,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}}
+  else{const peer=(m.from_name===myAccount)?m.to_name:m.from_name;c=ensureSingleChat(peer,m.from_nick,0);}
+  const from=(m.from_name===myAccount)?'me':m.from_name;
+  const t=m.timestamp?new Date(m.timestamp.replace(/-/g,'/')):new Date();
+  const msg={id:Date.now()+Math.random(),from,type:'text',text:m.body,time:isNaN(t)?new Date():t};
+  (conversations[c.id]=conversations[c.id]||[]).push(msg);
+  c.preview=previewOf(msg);c.time=fmtTime(msg.time,'hm');
+  if(currentChat!==c.id&&from!=='me')c.unread=(c.unread||0)+1;
+  renderChatList();updatePip();if(currentChat===c.id)renderMessages();}
+function setOnlineState(account,on){const f=friends.find(x=>x.id===account);if(f)f.online=on;
+  const c=chats.find(x=>x.friendId===account);if(c){c.sub=on?'在线':'离线';if(currentChat===c.id)document.getElementById('chatSub').textContent=c.sub;}renderContacts();}
+
 /* init */
 document.getElementById('parade').innerHTML=['croc','bunny','dog','tiger','wolf'].map(k=>avHTML({color:'c-'+k,img:ASSET(k),emoji:(ANIMALS.find(a=>a.key===k)||{}).emoji},'lg')).join('');
-refreshMe();renderChatList();renderContacts();buildEmoji();buildRegAvatars();updatePip();
+refreshMe();renderChatList();renderContacts();buildEmoji();buildRegAvatars();updatePip();initLive();
 </script>
 </body>
 </html>
