@@ -88,13 +88,21 @@ make web            # 等价于 scripts/run_web.sh
 > ALTER TABLE chat_groups ADD COLUMN notice   VARCHAR(512) NOT NULL DEFAULT '';
 > ```
 
-## 关于「真实猛兽派对 3D 模型」
+## 头像 / 真实猛兽派对角色
 
-当前头像用的是开源的 3D 渲染动物头像（Microsoft Fluent 3D，已下载到 `assets/`，离线可用）。
-《猛兽派对 / Party Animals》游戏官方的角色模型与动画是**受版权保护的商业资产，无法合法下载或打包进本仓库**。
+已去掉 3D 模型方案，统一用**头像图片**。头像加载顺序：
 
-如需更接近游戏的全身 3D 角色 + 动画，有两条可选路径（需你提供素材或确认授权）：
-1. 你提供**授权的角色素材**（图片序列 / Lottie 动画 / glTF(`.glb`) 模型），放进 `assets/`，我接一个 Three.js / Lottie 查看器替换现有 CSS 角色；
-2. 使用 **CC0/开源**的 3D 动物模型（非官方角色）做近似。
+```
+assets/pa/<key>.png   ← 放真实《猛兽派对》角色图(官方/授权)
+        ↓ 没有则回退
+assets/<key>.png      ← 仓库自带的开源 3D 黏土动物头像(占位)
+        ↓ 没有则回退
+emoji
+```
 
-桥接服务已支持 `.glb` 静态资源（`model/gltf-binary`），可直接放模型。
+**换成真实角色：** 把官方/授权的角色 PNG 放进 `prototype/assets/pa/`，
+按 `cat/dog/wolf/croc/bear/bunny/pig/tiger/fox/panda/penguin/koala/lion/cow/frog/hamster/owl/unicorn/mouse/hippo` 命名即可，
+全应用头像会立刻替换，无需改代码。详见 `assets/pa/README.txt`。
+
+> 《猛兽派对 / Party Animals》官方角色美术是**受版权保护的商业素材**，仓库不内置；
+> 请放入你自己拥有或已获授权的图片。仓库默认带的是开源黏土动物头像作占位。

@@ -561,10 +561,14 @@ const groupNotice={g1:'欢迎大家来到 zoo 开黑群！每晚 8 点准时发�
 const EMOJIS=['😀','😂','🥰','😎','🤩','😭','😡','👍','🙏','🎉','🔥','💯','🐶','🐱','🐺','🐊','🐻','🐰','🐷','🐯','🦊','🦁','🐮','🐸','🍻','🎮','💥','✨','❤️','💔','🤝','👀','🥳','😴','🤔','😤','🙈','💪'];
 
 let currentChat=null, ctxTarget=null, panelStack=[];
-function userById(id){if(id==='me')return ME;return friends.find(f=>f.id===id)||strangers.find(s=>s.id===id)||{name:'神秘伙伴',color:'c-cat',img:ASSET('cat'),emoji:'❓'};}
-function avHTML(u,size,sq){return `<div class="av av-${size} ${u.color}${sq?' av-sq':''}">
-  <img src="${u.img||''}" alt="" onerror="this.style.display='none';this.nextElementSibling.style.display='inline-block'">
-  <span class="fb" style="display:none">${u.emoji||'❓'}</span></div>`;}
+function userById(id){if(id==='me')return ME;return friends.find(f=>f.id===id)||strangers.find(s=>s.id===id)||{name:'神秘伙伴',color:'c-cat',animal:'cat',img:ASSET('cat'),emoji:'❓'};}
+function avKey(u){return u.animal||((u.color||'c-cat').slice(2));}
+/* 头像优先用 assets/pa/<key>.png(放真实猛兽派对角色图), 缺省回退占位图, 再回退 emoji */
+function avHTML(u,size,sq){const k=avKey(u);
+  return `<div class="av av-${size} ${u.color||('c-'+k)}${sq?' av-sq':''}">
+    <img src="assets/pa/${k}.png" data-fb="assets/${k}.png" alt=""
+      onerror="if(this.dataset.fb){this.src=this.dataset.fb;this.dataset.fb='';}else{this.style.display='none';this.nextElementSibling.style.display='inline-block';}">
+    <span class="fb" style="display:none">${u.emoji||'❓'}</span></div>`;}
 
 /* ===== 登录 / 注册 ===== */
 function showRegister(on){document.getElementById('loginCard').classList.toggle('hidden',on);document.getElementById('registerCard').classList.toggle('hidden',!on);
@@ -762,18 +766,15 @@ function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i
 function blockFriend(fid){if(LIVE&&online)net.blackAdd(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已加入黑名单 🚫');}
 function deleteFriend(fid){if(LIVE&&online)net.friendDel(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已删除好友 🗑️');}
 
-/* --- profile (页内, 含全身 3D 角色 + 动作) --- */
+/* --- profile (页内, 大头像 + 资料) --- */
 function openProfilePanel(u){panelStack=[];openPanel('profile',{user:u});}
-let profileEdit=false,profileAct='idle';
+let profileEdit=false;
 function renderProfile(u){const isMe=u.id==='me';const inner=document.getElementById('infoInner');
   if(LIVE&&online&&!isMe){if(liveProfiles[u.id])u.birth=liveProfiles[u.id].birth;else net.profileGet(u.id);}
-  const acts=[['idle','待机'],['wave','挥手'],['jump','跳跃'],['dance','跳舞'],['spin','转圈']];
-  const character=`<div class="character ${profileAct!=='idle'?'act-'+profileAct:''} ${u.color}">
-      <div class="c-shadow"></div><div class="c-arm l"></div><div class="c-arm r"></div>
-      <div class="c-foot l"></div><div class="c-foot r"></div><div class="c-body"></div>
-      <div class="c-head"><img src="${u.img}" onerror="this.parentElement.innerHTML='${u.emoji||'🐾'}';this.parentElement.style.fontSize='60px';this.parentElement.style.display='flex';this.parentElement.style.alignItems='center';this.parentElement.style.justifyContent='center'"></div>
-    </div>
-    <div class="char-actions">${acts.map(a=>`<div class="char-act ${profileAct===a[0]?'on':''}" onclick="setAct('${a[0]}')">${a[1]}</div>`).join('')}</div>`;
+  const hero=`<div style="display:flex;flex-direction:column;align-items:center;margin:6px 0 4px;">
+      ${avHTML(u,'xl')}
+      <div style="font-size:19px;font-weight:900;margin-top:12px;">${esc(u.name)}</div>
+    </div>`;
   const fields=(isMe&&profileEdit)
     ? `<div class="pf-fields">
         <label>昵称</label><input id="pfName" value="${esc(u.name)}">
@@ -786,8 +787,7 @@ function renderProfile(u){const isMe=u.id==='me';const inner=document.getElement
         <label>出生日期</label><div class="pf-val">${u.birth||'未填写'}</div></div>
        <div style="margin-top:14px">${isMe?`<button class="pill yellow sm" style="width:100%" onclick="profileEdit=true;renderProfile(ME)">✏️ 编辑资料</button>`
               :`<button class="pill green sm" style="width:100%" onclick="msgFromProfile('${u.id}')">💬 发消息</button>`}</div>`;
-  inner.innerHTML=panelHead(isMe?'我的资料':'个人资料')+`<div class="info-body">${character}${fields}</div>`;}
-function setAct(a){profileAct=a;const p=curPanel();renderProfile(p.data.user);}
+  inner.innerHTML=panelHead(isMe?'我的资料':'个人资料')+`<div class="info-body">${hero}${fields}</div>`;}
 function saveProfile(){const n=document.getElementById('pfName').value.trim();const b=document.getElementById('pfBirth').value;if(n)ME.name=n;ME.birth=b;profileEdit=false;
   if(LIVE&&online)net.profileSet(ME.name,ME.birth||'');refreshMe();renderChatList();renderProfile(ME);toast('资料已保存 ✅');}
 function msgFromProfile(id){const f=userById(id);closeInfo();if(f&&f.id!=='me')openSingleChatByFriend(f);}
