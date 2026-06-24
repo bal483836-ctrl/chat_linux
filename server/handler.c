@@ -268,6 +268,117 @@ void *client_thread(void *arg) {
             send_msg(fd, &o);
             break;
         }
+
+        /* 群成员列表: "account\tnick\tcolor\tonline\n" */
+        case MSG_GROUP_MEMBERS: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            int ids[1024];
+            int n = db_group_members(m.group_id, ids, 1024);
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_GROUP_MEMBERS; o.group_id = m.group_id;
+            int used = 0;
+            for (int i = 0; i < n; ++i) {
+                char nick[MAX_NAME_LEN] = {0};
+                db_get_nick(ids[i], nick, sizeof(nick));
+                int color  = db_get_avatar_color(ids[i]);
+                int online = (online_get_fd_by_id(ids[i]) >= 0) ? 1 : 0;
+                int k = snprintf(o.body + used, MAX_BODY_LEN - used,
+                                 "%d\t%s\t%d\t%d\n", ids[i] + ACCOUNT_BASE, nick, color, online);
+                if (k <= 0 || k >= MAX_BODY_LEN - used) break;
+                used += k;
+            }
+            o.body_len = used;
+            send_msg(fd, &o);
+            break;
+        }
+
+        /* ===== Web 原型新增功能 ===== */
+
+        /* 设置好友备注 */
+        case MSG_FRIEND_REMARK: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            int fid = db_user_id_by_account(m.to_name);
+            if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
+            db_friend_set_remark(sess.uid, fid, m.body);
+            resp(fd, RS_OK, "remark set");
+            break;
+        }
+
+        /* 成员邀请好友入群: group_id=群号, body 每行一个账号 */
+        case MSG_GROUP_INVITE: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            if (!db_group_is_member(m.group_id, sess.uid)) { resp(fd, RS_FAIL, "你不是该群成员"); break; }
+            int added = 0;
+            char dup[MAX_BODY_LEN]; strncpy(dup, m.body, sizeof(dup) - 1); dup[sizeof(dup) - 1] = 0;
+            char *save = NULL, *line = strtok_r(dup, "\n", &save);
+            while (line) {
+                while (*line == ' ' || *line == '\r') ++line;
+                int tid = db_user_id_by_account(line);
+                if (tid > 0 && db_group_add_member(m.group_id, tid) == 0) {
+                    ++added;
+                    /* 把更新后的群列表推给被邀请者(在线时) */
+                    Message gl; memset(&gl, 0, sizeof(gl));
+                    gl.type = MSG_GROUP_LIST;
+                    gl.body_len = db_group_list_for_user(tid, gl.body, MAX_BODY_LEN);
+                    online_push(tid, &gl);
+                }
+                line = strtok_r(NULL, "\n", &save);
+            }
+            char t[48]; snprintf(t, sizeof(t), "已邀请 %d 人", added);
+            resp(fd, RS_OK, t);
+            break;
+        }
+
+        /* 群公告: body 非空=群主设置, 否则查询; 回 MSG_GROUP_NOTICE */
+        case MSG_GROUP_NOTICE: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            if (m.body_len > 0) {
+                if (db_group_owner(m.group_id) != sess.uid) { resp(fd, RS_FAIL, "仅群主可修改公告"); break; }
+                db_group_set_notice(m.group_id, m.body);
+            }
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_GROUP_NOTICE; o.group_id = m.group_id;
+            db_group_notice_get(m.group_id, o.body, MAX_BODY_LEN);
+            o.body_len = strlen(o.body);
+            fill_timestamp(o.timestamp, sizeof(o.timestamp));
+            send_msg(fd, &o);
+            break;
+        }
+
+        /* 查询个人资料: to_name=账号(空=自己) */
+        case MSG_PROFILE_GET: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            int tid = (m.to_name[0]) ? db_user_id_by_account(m.to_name) : sess.uid;
+            if (tid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
+            char nick[MAX_NAME_LEN] = {0}, birth[16] = {0}; int color = 0;
+            db_profile_get(tid, nick, sizeof(nick), birth, sizeof(birth), &color);
+            Message o; memset(&o, 0, sizeof(o));
+            o.type = MSG_PROFILE_DATA;
+            snprintf(o.from_name, MAX_NAME_LEN, "%d", tid + ACCOUNT_BASE);
+            int online = (online_get_fd_by_id(tid) >= 0) ? 1 : 0;
+            o.body_len = snprintf(o.body, MAX_BODY_LEN, "%s\t%s\t%d\t%d", nick, birth, color, online);
+            send_msg(fd, &o);
+            break;
+        }
+
+        /* 更新自己资料: body="昵称\n出生日期" */
+        case MSG_PROFILE_SET: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            char nick[MAX_NAME_LEN] = {0}, birth[16] = {0};
+            const char *nl = strchr(m.body, '\n');
+            if (nl) {
+                int nlen = nl - m.body; if (nlen >= MAX_NAME_LEN) nlen = MAX_NAME_LEN - 1;
+                memcpy(nick, m.body, nlen); nick[nlen] = 0;
+                strncpy(birth, nl + 1, sizeof(birth) - 1);
+            } else {
+                strncpy(nick, m.body, sizeof(nick) - 1);
+            }
+            if (nick[0]) { db_set_nick(sess.uid, nick); strncpy(sess.nick, nick, MAX_NAME_LEN - 1); }
+            db_set_birthday(sess.uid, birth);
+            resp(fd, RS_OK, "profile updated");
+            break;
+        }
+
         case MSG_HISTORY_PRIV: {
             int other = db_user_id_by_account(m.to_name);
             if (other < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }

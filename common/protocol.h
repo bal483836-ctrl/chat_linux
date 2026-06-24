@@ -31,6 +31,7 @@ enum MsgType {
     MSG_FRIEND_REQ_NOTIFY = 26,  /* 服务器->目标: status=reqid, from_name     */
     MSG_FRIEND_REQ_REPLY  = 27,  /* 目标->服务器: status=reqid, group_id=1/0  */
     MSG_FRIEND_REQ_LIST   = 28,  /* 拉取待处理: "reqid\tfrom\ttime\thello"    */
+    MSG_FRIEND_REMARK     = 29,  /* 设置好友备注: to_name=对方, body=备注     */
 
     MSG_GROUP_CREATE   = 30,  /* body=群名                                   */
     MSG_GROUP_JOIN     = 31,  /* (兼容) 直接加群                              */
@@ -40,6 +41,7 @@ enum MsgType {
     MSG_GROUP_JOIN_NOTIFY     = 35,  /* 服务器->群主: status=reqid, group_id  */
     MSG_GROUP_JOIN_REPLY      = 36,  /* 群主->服务器: status=reqid, group_id=1/0 */
     MSG_GROUP_JOIN_REQ_LIST   = 37,  /* "reqid\tgid\tgname\tfrom\ttime"       */
+    MSG_GROUP_INVITE          = 39,  /* 成员邀请入群: group_id, body=多行账号 */
 
     MSG_HISTORY_PRIV   = 40,  /* 拉取私聊历史 to_name=对方                   */
     MSG_HISTORY_GROUP  = 41,  /* 拉取群聊历史 group_id                       */
@@ -73,6 +75,14 @@ enum MsgType {
      *   "msg_id\ttime\tfrom_nick\tkind\tpeer\tsnippet"
      * 其中 kind 0=私聊 1=群聊; peer 私聊填对方账号、群聊填群号. */
     MSG_MSG_SEARCH     = 90,
+
+    /* ===== 群公告 / 个人资料 (Web 原型新增功能) ===== */
+    MSG_GROUP_NOTICE   = 100, /* group_id; body 非空=群主设置, 否则查询;
+                              * 服务端回同 type, group_id, body=当前公告      */
+    MSG_PROFILE_GET    = 101, /* to_name=账号(空=自己); 回 MSG_PROFILE_DATA   */
+    MSG_PROFILE_SET    = 102, /* 更新自己: body="昵称\n出生日期(YYYY-MM-DD)"  */
+    MSG_PROFILE_DATA   = 103, /* 回应: from_name=账号,
+                              * body="昵称\t出生日期\tavatar_color\tonline"   */
 };
 
 /* 应答状态码.

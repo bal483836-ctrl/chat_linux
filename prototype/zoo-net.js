@@ -14,14 +14,15 @@ const T = {
   REGISTER:1, LOGIN:2, LOGOUT:3, RESPONSE:4,
   PRIVATE_CHAT:10, GROUP_CHAT:11,
   FRIEND_DEL:21, FRIEND_LIST:22, BLACK_ADD:23, BLACK_DEL:24,
-  FRIEND_REQ:25, FRIEND_REQ_NOTIFY:26, FRIEND_REQ_REPLY:27, FRIEND_REQ_LIST:28,
+  FRIEND_REQ:25, FRIEND_REQ_NOTIFY:26, FRIEND_REQ_REPLY:27, FRIEND_REQ_LIST:28, FRIEND_REMARK:29,
   GROUP_CREATE:30, GROUP_LIST:32, GROUP_MEMBERS:33,
-  GROUP_JOIN_REQ:34, GROUP_JOIN_NOTIFY:35, GROUP_JOIN_REPLY:36, GROUP_JOIN_REQ_LIST:37,
+  GROUP_JOIN_REQ:34, GROUP_JOIN_NOTIFY:35, GROUP_JOIN_REPLY:36, GROUP_JOIN_REQ_LIST:37, GROUP_INVITE:39,
   HISTORY_PRIV:40, HISTORY_GROUP:41, OFFLINE_PULL:42,
   FILE_BEGIN:50, FILE_CHUNK:51, FILE_END:52,
   NOTIFY_ONLINE:60, NOTIFY_OFFLINE:61,
   USER_SEARCH:70, GROUP_SEARCH:71,
   AVATAR_UPLOAD:80, AVATAR_GET:81, AVATAR_DATA:82, MSG_SEARCH:90,
+  GROUP_NOTICE:100, PROFILE_GET:101, PROFILE_SET:102, PROFILE_DATA:103,
 };
 const RS = { OK:0, FAIL:1, AUTH_FAIL:2, USER_EXIST:3, USER_NOT_FOUND:4, NOT_FRIEND:5, IN_BLACKLIST:6, GROUP_NOT_FOUND:7 };
 
@@ -76,9 +77,16 @@ class ZooNet {
   friendReqReply(reqid, ok){ this.send({type:T.FRIEND_REQ_REPLY, status:Number(reqid), group_id: ok?1:0}); }
   friendDel(acc){ return this._req({type:T.FRIEND_DEL, to_name:String(acc)}); }
   blackAdd(acc){ return this._req({type:T.BLACK_ADD, to_name:String(acc)}); }
+  friendRemark(acc, remark){ return this._req({type:T.FRIEND_REMARK, to_name:String(acc), body:remark||''}); }
   groupList(){ this.send({type:T.GROUP_LIST}); }
   groupCreate(name){ return this._req({type:T.GROUP_CREATE, body:name}); }
   groupMembers(gid){ this.send({type:T.GROUP_MEMBERS, group_id:Number(gid)}); }
+  groupInvite(gid, accounts){ return this._req({type:T.GROUP_INVITE, group_id:Number(gid), body:(accounts||[]).join('\n')}); }
+  groupNotice(gid, text){ this.send({type:T.GROUP_NOTICE, group_id:Number(gid), body:text||''}); }
+
+  /* ---- 个人资料 ---- */
+  profileGet(acc){ this.send({type:T.PROFILE_GET, to_name: acc?String(acc):''}); }
+  profileSet(nick, birth){ return this._req({type:T.PROFILE_SET, body:(nick||'')+'\n'+(birth||'')}); }
 
   /* ---- 检索 ---- */
   userSearch(kw){ this.send({type:T.USER_SEARCH, body:kw}); }
@@ -94,6 +102,8 @@ class ZooNet {
     return { account:p[0], nick:p[1], color:+p[2]||0, online:+p[3]===1 }; }); }
   static parseSearch(body){ return splitLines(body).map(l=>{ const p=l.split('\t');
     return { msgId:p[0], time:p[1], fromNick:p[2], kind:+p[3], peer:p[4], snippet:p[5] }; }); }
+  static parseProfile(body){ const p=(body||'').split('\t');
+    return { nick:p[0]||'', birth:p[1]||'', color:+p[2]||0, online:+p[3]===1 }; }
 }
 function splitLines(s){ return (s||'').split('\n').map(x=>x.trim()).filter(Boolean); }
 

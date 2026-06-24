@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS users (
     /* 课程示例: 简单 sha1 即可, 生产环境应使用 bcrypt/argon2 */
     password      VARCHAR(64)  NOT NULL,
     avatar_color  TINYINT      NOT NULL DEFAULT 0,
+    birthday      DATE         NULL,                 /* 个人资料: 出生日期 */
     online        TINYINT      NOT NULL DEFAULT 0,
     created_at    DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS friends (
     user_id     INT NOT NULL,
     friend_id   INT NOT NULL,
     status      TINYINT NOT NULL DEFAULT 0,
+    remark      VARCHAR(32) NOT NULL DEFAULT '',     /* 好友备注 */
     PRIMARY KEY (user_id, friend_id),
     FOREIGN KEY (user_id)   REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (friend_id) REFERENCES users(id) ON DELETE CASCADE
@@ -39,6 +41,7 @@ CREATE TABLE IF NOT EXISTS chat_groups (
     id          INT NOT NULL AUTO_INCREMENT,
     name        VARCHAR(64) NOT NULL UNIQUE,
     owner_id    INT NOT NULL,
+    notice      VARCHAR(512) NOT NULL DEFAULT '',     /* 群公告 */
     created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     FOREIGN KEY (owner_id) REFERENCES users(id) ON DELETE CASCADE

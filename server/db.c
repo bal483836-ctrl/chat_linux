@@ -221,12 +221,12 @@ int db_is_black(int uid, int fid) {
     return yes;
 }
 
-/* 输出格式: "account\tnickname\tavatar_color\tonline\tblack\n" */
+/* 输出格式: "account\tnickname\tavatar_color\tonline\tblack\tremark\n" */
 int db_friend_list(int uid, char *out, int outsz,
                    int (*is_online)(int)) {
-    char sql[256];
+    char sql[320];
     snprintf(sql, sizeof(sql),
-        "SELECT u.id,u.nickname,u.avatar_color,f.status FROM friends f "
+        "SELECT u.id,u.nickname,u.avatar_color,f.status,f.remark FROM friends f "
         "JOIN users u ON u.id=f.friend_id WHERE f.user_id=%d", uid);
     LOCK();
     out[0] = 0;
@@ -239,9 +239,10 @@ int db_friend_list(int uid, char *out, int outsz,
             int color  = atoi(row[2]);
             int black  = atoi(row[3]);
             int online = is_online ? is_online(fid) : 0;
+            const char *remark = row[4] ? row[4] : "";
             int n = snprintf(out + used, outsz - used,
-                             "%d\t%s\t%d\t%d\t%d\n",
-                             ACCOUNT_BASE + fid, row[1], color, online, black);
+                             "%d\t%s\t%d\t%d\t%d\t%s\n",
+                             ACCOUNT_BASE + fid, row[1], color, online, black, remark);
             if (n <= 0 || n >= outsz - used) break;
             used += n;
         }
@@ -733,4 +734,108 @@ int db_msg_search(int user_id, const char *q, char *out, int outsz) {
     }
     UNLOCK();
     return used;
+}
+
+/* ============================================================
+ *  好友备注 / 群成员管理 / 群公告 / 个人资料  (Web 原型新增功能)
+ * ============================================================ */
+
+int db_friend_set_remark(int uid, int fid, const char *remark) {
+    char en[128]; esc(remark, en, sizeof(en));
+    char sql[256];
+    snprintf(sql, sizeof(sql),
+        "UPDATE friends SET remark='%s' WHERE user_id=%d AND friend_id=%d", en, uid, fid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
+int db_group_is_member(int gid, int uid) {
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+        "SELECT 1 FROM group_members WHERE group_id=%d AND user_id=%d", gid, uid);
+    LOCK();
+    int yes = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        if (r && mysql_fetch_row(r)) yes = 1;
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return yes;
+}
+
+int db_group_add_member(int gid, int uid) {
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+        "INSERT IGNORE INTO group_members(group_id,user_id) VALUES(%d,%d)", gid, uid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
+int db_group_notice_get(int gid, char *out, int outsz) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT notice FROM chat_groups WHERE id=%d", gid);
+    LOCK();
+    int rc = -1; out[0] = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            strncpy(out, row[0] ? row[0] : "", outsz - 1);
+            out[outsz - 1] = 0; rc = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return rc;
+}
+
+int db_group_set_notice(int gid, const char *notice) {
+    char en[1100]; esc(notice, en, sizeof(en));
+    char sql[1300];
+    snprintf(sql, sizeof(sql), "UPDATE chat_groups SET notice='%s' WHERE id=%d", en, gid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
+int db_set_birthday(int uid, const char *birth) {
+    char sql[160];
+    if (birth && birth[0])
+        snprintf(sql, sizeof(sql), "UPDATE users SET birthday='%.10s' WHERE id=%d", birth, uid);
+    else
+        snprintf(sql, sizeof(sql), "UPDATE users SET birthday=NULL WHERE id=%d", uid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
+int db_set_nick(int uid, const char *nick) {
+    char en[128]; esc(nick, en, sizeof(en));
+    char sql[256];
+    snprintf(sql, sizeof(sql), "UPDATE users SET nickname='%s' WHERE id=%d", en, uid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
+int db_profile_get(int uid, char *nick, int nsz, char *birth, int bsz, int *color) {
+    char sql[200];
+    snprintf(sql, sizeof(sql),
+        "SELECT nickname,avatar_color,DATE_FORMAT(birthday,'%%Y-%%m-%%d') FROM users WHERE id=%d", uid);
+    LOCK();
+    int rc = -1;
+    if (nick)  nick[0]  = 0;
+    if (birth) birth[0] = 0;
+    if (color) *color   = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            if (nick)  { strncpy(nick, row[0] ? row[0] : "", nsz - 1); nick[nsz - 1] = 0; }
+            if (color) *color = atoi(row[1] ? row[1] : "0");
+            if (birth) { strncpy(birth, row[2] ? row[2] : "", bsz - 1); birth[bsz - 1] = 0; }
+            rc = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return rc;
 }

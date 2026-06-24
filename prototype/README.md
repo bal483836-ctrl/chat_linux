@@ -57,11 +57,36 @@ make web            # 等价于 scripts/run_web.sh
 | 注册 / 登录 | 1 / 2 | body=`"昵称\n密码"` / `"账号\n密码"` |
 | 私聊 / 群聊 | 10 / 11 | `to_name` 账号 / `group_id` 群号 |
 | 好友/群列表 | 22 / 32 | 登录后服务器主动推送 |
-| 群成员 | 33 | |
+| 群成员 | 33 | **新增**：返回 `account\tnick\tcolor\tonline` |
 | 历史 | 40 / 41 | 私聊 / 群聊 |
 | 好友申请 | 25 | |
 | 上下线通知 | 60 / 61 | |
 | 建群 | 30 | |
+| 好友备注 | 29 | **新增** `MSG_FRIEND_REMARK` |
+| 邀请入群 | 39 | **新增** `MSG_GROUP_INVITE`（成员把好友拉进群） |
+| 群公告 | 100 | **新增** `MSG_GROUP_NOTICE`（群主设置/任意成员查询） |
+| 个人资料 | 101/102/103 | **新增** `MSG_PROFILE_GET/SET/DATA`（昵称+出生日期） |
+
+## 本次为「前端有、后端缺」的功能补的后端
+
+前端原型里这些功能此前只在本地模拟，现已在 **C 服务器 + MySQL** 真正落地，
+并在 Linux 上用真实 MariaDB 跑通自动化测试（`register→login→...` 全绿）：
+
+| 功能 | 后端改动 |
+|------|---------|
+| 好友备注 | `friends.remark` 列 + `MSG_FRIEND_REMARK`；写进好友列表第 6 列 |
+| 邀请好友入群 | `MSG_GROUP_INVITE`：校验邀请人是群成员后批量加人，并把新群列表推给被邀请者 |
+| 群公告 | `chat_groups.notice` 列 + `MSG_GROUP_NOTICE`（仅群主可改） |
+| 个人资料/出生日期 | `users.birthday` 列 + `MSG_PROFILE_GET/SET/DATA` |
+| 群成员列表 | 补上 `MSG_GROUP_MEMBERS` 的服务端处理（之前协议有定义但无实现） |
+
+> 数据库新增列已写入 `sql/init.sql`（全新安装直接生效）；
+> 老库可执行：
+> ```sql
+> ALTER TABLE users       ADD COLUMN birthday DATE NULL;
+> ALTER TABLE friends     ADD COLUMN remark   VARCHAR(32)  NOT NULL DEFAULT '';
+> ALTER TABLE chat_groups ADD COLUMN notice   VARCHAR(512) NOT NULL DEFAULT '';
+> ```
 
 ## 关于「真实猛兽派对 3D 模型」
 

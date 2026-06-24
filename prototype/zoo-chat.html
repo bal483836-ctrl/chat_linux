@@ -720,7 +720,7 @@ function panelHead(title){const back=panelStack.length>1?`<button class="icon-bt
 /* --- info --- */
 let editingNotice=false,editingRemark=false;
 function renderInfo(){const c=chats.find(x=>x.id===currentChat);if(!c){closeInfo();return;}const inner=document.getElementById('infoInner');
-  if(c.type==='group'){const ids=c.members||[];let mem='';
+  if(c.type==='group'){if(LIVE&&online&&!c._nLoaded){c._nLoaded=1;net.groupNotice(c.gid,'');net.groupMembers(c.gid);}const ids=c.members||[];let mem='';
     ids.forEach((id,i)=>{const u=userById(id);mem+=`<div class="member" onclick="openPanel('profile',{user:userById('${id}')})">${i===0?'<span class="owner-tag">群主</span>':''}${avHTML(u,'md')}<span class="mn">${esc(u.name)}</span></div>`;});
     mem+=`<div class="member add-member" onclick="openPanel('invite')"><div class="plus">＋</div><span class="mn">邀请</span></div>`;
     const noticeBlock=editingNotice
@@ -752,8 +752,10 @@ function renderInfo(){const c=chats.find(x=>x.id===currentChat);if(!c){closeInfo
         <div class="gi-line danger" onclick="blockFriend('${c.friendId}')"><span class="gi-ic">🚫</span>加入黑名单</div>
         <div class="gi-line danger" onclick="deleteFriend('${c.friendId}')"><span class="gi-ic">🗑️</span>删除好友</div></div></div>`;}
 }
-function saveNotice(){const c=chats.find(x=>x.id===currentChat);const v=document.getElementById('noticeEdit').value.trim();if(v)groupNotice[c.id]=v;editingNotice=false;renderInfo();toast('群公告已更新 📢');}
-function saveRemark(){const c=chats.find(x=>x.id===currentChat);c.remark=document.getElementById('remarkEdit').value.trim();editingRemark=false;renderInfo();toast('备注已保存 ✏️');}
+function saveNotice(){const c=chats.find(x=>x.id===currentChat);const v=document.getElementById('noticeEdit').value.trim();if(v)groupNotice[c.id]=v;editingNotice=false;
+  if(LIVE&&online)net.groupNotice(c.gid,v);renderInfo();toast('群公告已更新 📢');}
+function saveRemark(){const c=chats.find(x=>x.id===currentChat);c.remark=document.getElementById('remarkEdit').value.trim();editingRemark=false;
+  if(LIVE&&online)net.friendRemark(c.friendId,c.remark);renderInfo();toast('备注已保存 ✏️');}
 function togglePin(){const c=chats.find(x=>x.id===currentChat);c.pinned=!c.pinned;renderChatList();renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}
 function clearChat(){conversations[currentChat]=[];renderMessages();toast('聊天记录已清空 🧹');}
 function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);renderChatList();toast('已退出群聊');}
@@ -764,6 +766,7 @@ function deleteFriend(fid){if(LIVE&&online)net.friendDel(fid);const id=currentCh
 function openProfilePanel(u){panelStack=[];openPanel('profile',{user:u});}
 let profileEdit=false,profileAct='idle';
 function renderProfile(u){const isMe=u.id==='me';const inner=document.getElementById('infoInner');
+  if(LIVE&&online&&!isMe){if(liveProfiles[u.id])u.birth=liveProfiles[u.id].birth;else net.profileGet(u.id);}
   const acts=[['idle','待机'],['wave','挥手'],['jump','跳跃'],['dance','跳舞'],['spin','转圈']];
   const character=`<div class="character ${profileAct!=='idle'?'act-'+profileAct:''} ${u.color}">
       <div class="c-shadow"></div><div class="c-arm l"></div><div class="c-arm r"></div>
@@ -785,7 +788,8 @@ function renderProfile(u){const isMe=u.id==='me';const inner=document.getElement
               :`<button class="pill green sm" style="width:100%" onclick="msgFromProfile('${u.id}')">💬 发消息</button>`}</div>`;
   inner.innerHTML=panelHead(isMe?'我的资料':'个人资料')+`<div class="info-body">${character}${fields}</div>`;}
 function setAct(a){profileAct=a;const p=curPanel();renderProfile(p.data.user);}
-function saveProfile(){const n=document.getElementById('pfName').value.trim();const b=document.getElementById('pfBirth').value;if(n)ME.name=n;ME.birth=b;profileEdit=false;refreshMe();renderChatList();renderProfile(ME);toast('资料已保存 ✅');}
+function saveProfile(){const n=document.getElementById('pfName').value.trim();const b=document.getElementById('pfBirth').value;if(n)ME.name=n;ME.birth=b;profileEdit=false;
+  if(LIVE&&online)net.profileSet(ME.name,ME.birth||'');refreshMe();renderChatList();renderProfile(ME);toast('资料已保存 ✅');}
 function msgFromProfile(id){const f=userById(id);closeInfo();if(f&&f.id!=='me')openSingleChatByFriend(f);}
 
 /* --- 邀请进群(页内) --- */
@@ -796,7 +800,9 @@ function renderInvitePanel(){inviteSel=new Set();const c=chats.find(x=>x.id===cu
   inner.innerHTML=panelHead('邀请好友加入')+`<div class="info-body"><div class="pick-list">${rows}</div></div>
     <div style="padding:14px;border-top:1px solid var(--line)"><button class="pill green" style="width:100%" onclick="confirmInvite()">邀请 <span id="invCount">0</span> 位</button></div>`;}
 function toggleInvite(id,el){inviteSel.has(id)?inviteSel.delete(id):inviteSel.add(id);el.querySelector('.pick').classList.toggle('on');document.getElementById('invCount').textContent=inviteSel.size;}
-function confirmInvite(){if(!inviteSel.size){toast('先选择伙伴吧~');return;}const c=chats.find(x=>x.id===currentChat);c.members=[...(c.members||[]),...inviteSel];c.sub=c.members.length+' 位成员';document.getElementById('chatSub').textContent=c.sub;toast('已邀请 '+inviteSel.size+' 位伙伴 🎉');panelBack();}
+function confirmInvite(){if(!inviteSel.size){toast('先选择伙伴吧~');return;}const c=chats.find(x=>x.id===currentChat);
+  if(LIVE&&online){net.groupInvite(c.gid,[...inviteSel]).then(r=>{toast(r.body||'已邀请 🎉');net.groupMembers(c.gid);});panelBack();return;}
+  c.members=[...(c.members||[]),...inviteSel];c.sub=c.members.length+' 位成员';document.getElementById('chatSub').textContent=c.sub;toast('已邀请 '+inviteSel.size+' 位伙伴 🎉');panelBack();}
 
 /* --- 查找 / 文件 QQ 式(页内) --- */
 let searchTab='chat',searchKey='';
@@ -864,7 +870,7 @@ document.addEventListener('click',e=>{const pop=document.getElementById('emojiPo
    - 经 http(s) 由 bridge 提供页面时启用 LIVE；file:// 双击则为演示模式
    ============================================================ */
 const LIVE=(location.protocol==='http:'||location.protocol==='https:');
-let net=null,online=false,myAccount=null;
+let net=null,online=false,myAccount=null,liveProfiles={};
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
 function liveStatus(txt,ok){const el=document.getElementById('netStatus');if(el){el.textContent=txt;el.className='net-status '+(ok?'on':'off');}}
 async function initLive(){
@@ -882,6 +888,11 @@ function bindLive(){const T=ZooNet.T;
   net.on(T.GROUP_CHAT,m=>incomingMsg('grp',m));
   net.on(T.NOTIFY_ONLINE,m=>setOnlineState(m.from_name,true));
   net.on(T.NOTIFY_OFFLINE,m=>setOnlineState(m.from_name,false));
+  net.on(T.GROUP_NOTICE,m=>{const cid='g'+m.group_id;groupNotice[cid]=m.body;
+    if(currentChat===cid&&panelStack.length&&curPanel().view==='info')renderPanel();});
+  net.on(T.PROFILE_DATA,m=>{const p=ZooNet.parseProfile(m.body);liveProfiles[m.from_name]=p;
+    const cp=panelStack.length?curPanel():null;
+    if(cp&&cp.view==='profile'&&cp.data.user&&cp.data.user.id===m.from_name){cp.data.user.birth=p.birth;cp.data.user.name=cp.data.user.name||p.nick;renderPanel();}});
   net.on('close',()=>{online=false;liveStatus('连接已断开',false);});}
 function liveResetData(){friends.length=0;strangers.length=0;chats.length=0;Object.keys(conversations).forEach(k=>delete conversations[k]);}
 function ensureUser(account,nick,color){if(account===myAccount)return ME;
