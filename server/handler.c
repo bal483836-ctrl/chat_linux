@@ -157,11 +157,7 @@ static void on_login_success(Session *s) {
     notify_friends(s->uid, s->account, s->nick, 1);
 }
 
-void *client_thread(void *arg) {
-    int fd = *(int *)arg;
-    free(arg);
-    pthread_detach(pthread_self());
-
+void serve_client(int fd) {
     Session sess = { .fd = fd, .uid = -1 };
     Message m;
 
@@ -498,5 +494,13 @@ out:
     }
     online_remove_by_fd(fd);
     close(fd);
+}
+
+/* "每连接一线程"模式的线程入口: 取出 fd, detach 自己, 然后复用 serve_client。 */
+void *client_thread(void *arg) {
+    int fd = *(int *)arg;
+    free(arg);
+    pthread_detach(pthread_self());
+    serve_client(fd);
     return NULL;
 }

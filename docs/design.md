@@ -68,6 +68,28 @@ scripts/   setup.sh                       一键安装
 
 **对照演示**: 若想体验进程版本，可改 `pthread_create` 为 `fork`，并把 `g_tab` 放进 `mmap(MAP_SHARED|MAP_ANON)` 区域、用 `sem_init(..., 1, 1)` 进程间信号量保护。本项目在 `server/server.c` 注释里也指出了这一对照点，便于答辩时讲解。
 
+### 3.1 三种可切换的并发模型 (线程池 / 进程池)
+
+为便于对照演示，服务器把并发模型做成运行时可切换 (环境变量 `CHAT_MODE`)，三选一：
+
+| `CHAT_MODE`  | 模型 | 实现位置 | 特点 |
+|--------------|------|----------|------|
+| `thread` (默认) | 每连接一线程 | `server.c` + `handler.c:client_thread` | 简单直观；连接风暴下频繁建/销线程、并发数不受控 |
+| `threadpool` | 单进程 + 线程池 | `server/threadpool.c` | 预建固定线程，`accept` 后把 fd 投进**有界任务队列**，工作线程取出调用 `serve_client`；复用线程 + 队列容量做**背压**限制并发上限 |
+| `process` | pre-fork 进程池 | `server/procpool.c` | master 先 `listen` 再 `fork` N 个子进程，多个子进程共享同一监听 fd 由内核负载均衡 `accept`；每个子进程内部又各带一个线程池 |
+
+设计要点与坑：
+
+1. **线程池 = 生产者-消费者**
+   任务队列是存放 client fd 的环形缓冲，`mu` + `not_empty`/`not_full` 两个条件变量实现阻塞同步；队列满时投递者阻塞形成背压。优雅关闭时置 `shutdown` 标志、`broadcast` 唤醒全部线程、排空队列后 `join` 回收。
+
+2. **进程池的共享状态局限**
+   各子进程地址空间独立，在线表 `g_tab` 与 client socket **不跨进程共享**，因此连到不同子进程的两个用户无法实时互推（离线消息走 MySQL 仍可达）。这正好对应上表"多进程需 IPC 才能共享数据"的结论——要做到进程池下的实时互通，必须把在线表搬进共享内存、并引入跨进程的消息路由。本项目据此说明：完整实时聊天用 `thread`/`threadpool`，`process` 模式用于演示 pre-fork 模型本身。
+   另外 MySQL 连接句柄不能跨 `fork` 共享，所以每个子进程在 `fork` 之后各自 `db_init` 建立独立连接。
+
+3. **多线程下的信号处理坑**
+   退出信号若被某个工作线程"接走"，阻塞在 `accept()` 的主线程就收不到、无法退出。两点修复：① 创建线程池前用 `pthread_sigmask` 屏蔽 `SIGINT/SIGTERM`，让工作线程继承屏蔽掩码，信号只投递到主线程；② 用 `sigaction`(不带 `SA_RESTART`) 安装处理函数，并在处理函数里 `close(listen_fd)`，确保 `accept()`/`waitpid()` 被打断返回而非自动重启。
+
 ---
 
 ## 4. 同步与互斥问题

@@ -20,7 +20,8 @@ BIN      := bin
 SRC_COMMON := common/net_io.c
 
 # --- server ---
-SRV_SRC := $(SRC_COMMON) server/server.c server/handler.c server/online.c server/db.c
+SRV_SRC := $(SRC_COMMON) server/server.c server/handler.c server/online.c server/db.c \
+           server/threadpool.c server/procpool.c
 SRV_LD  := -lpthread -lmysqlclient -lssl -lcrypto
 
 # --- client ---

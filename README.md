@@ -53,6 +53,32 @@ bin/chat_client          # 弹出登录窗
 
 可同时启动多个客户端在本机互相聊天。
 
+## 并发模型 (线程池 / 进程池)
+
+服务器支持三种可切换的并发模型，通过环境变量 `CHAT_MODE` 选择：
+
+| `CHAT_MODE`  | 模型                | 说明                                               |
+|--------------|---------------------|----------------------------------------------------|
+| `thread`     | 每连接一线程 (默认) | 每次 `accept` 都 `pthread_create` 一个线程，原始实现 |
+| `threadpool` | 单进程 + 线程池     | 固定线程数 + 有界任务队列，复用线程、限制并发上限    |
+| `process`    | pre-fork 进程池     | `fork` 出多个子进程，每个子进程各自带一个线程池      |
+
+相关环境变量：
+
+```bash
+CHAT_MODE=threadpool CHAT_THREADS=8 bin/chat_server        # 8 线程的线程池
+CHAT_MODE=process    CHAT_WORKERS=4 CHAT_THREADS=4 bin/chat_server  # 4 进程 × 4 线程
+```
+
+- `CHAT_THREADS` 线程池线程数（默认 = CPU 核数 × 2）
+- `CHAT_WORKERS` 进程池子进程数，仅 `process` 模式有效（默认 = CPU 核数）
+
+> ⚠ `process` 模式下各子进程地址空间独立、在线表与 socket 不共享，连接到
+> *不同* 子进程的两个用户无法互相实时推送消息（离线消息经 MySQL 仍可达，
+> 重新登录即可收到）。它主要用于演示 pre-fork 并发模型本身；要完整的实时
+> 多用户聊天请用 `thread` 或 `threadpool` 单进程模式。实现细节见
+> `server/threadpool.c` 与 `server/procpool.c`。
+
 ## 协议速览
 
 所有消息共用一个固定大小 `Message` 结构 (`common/protocol.h`)，用 `type` 字段区分语义。详细类型表见 `protocol.h` 中的 `enum MsgType`。
@@ -61,6 +87,8 @@ bin/chat_client          # 弹出登录窗
 
 - 在线表 (`server/online.c`) — `pthread_mutex_t`
 - MySQL 单连接 (`server/db.c`) — `pthread_mutex_t`
+- 线程池任务队列 (`server/threadpool.c`) — `pthread_mutex_t` + 条件变量 (生产者-消费者)
+- 进程池 pre-fork (`server/procpool.c`) — 多子进程共享监听 fd, 内核负载均衡 `accept`
 - 客户端 socket 写 (`client/net.c`) — `pthread_mutex_t`
 - GTK 跨线程刷新 — `g_idle_add` 投递到主线程
 
