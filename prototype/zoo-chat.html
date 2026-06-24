@@ -854,6 +854,8 @@ function confirmCreateGroup(){
   groupNotice[id]='欢迎来到「'+name+'」，一起开黑吧！🐾';conversations[id]=[];switchTab('msg');openChat(id);toast('群聊已创建 🎉');}
 
 /* ===== 工具 ===== */
+let toastTimer=null;
+function toast(msg){const t=document.getElementById('toast');if(!t)return;t.textContent=msg;t.classList.add('show');clearTimeout(toastTimer);toastTimer=setTimeout(()=>t.classList.remove('show'),1600);}
 function esc(s){return (s||'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));}
 function pad(n){return n<10?'0'+n:n;}
 function fmtSize(b){if(!b)return'';if(b<1024)return b+' B';if(b<1048576)return (b/1024).toFixed(0)+' KB';return (b/1048576).toFixed(1)+' MB';}
