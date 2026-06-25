@@ -5,3 +5,5 @@ recv/
 core
 core.*
 data/
+desktop/node_modules/
+desktop/dist/

@@ -1,0 +1,25 @@
+{
+  "name": "zoo-desktop",
+  "version": "1.0.0",
+  "description": "zoo 派对聊天 - 桌面版 (Electron 外壳, 直连 C 聊天服务器)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "fun.zoo.chat",
+    "productName": "zoo",
+    "files": ["main.js", "preload.js", "msgcodec.js"],
+    "extraResources": [
+      { "from": "../prototype", "to": "prototype" }
+    ],
+    "win":   { "target": "nsis" },
+    "linux": { "target": "AppImage", "category": "Network" }
+  }
+}

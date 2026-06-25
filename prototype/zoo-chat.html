@@ -871,15 +871,16 @@ document.addEventListener('click',e=>{const pop=document.getElementById('emojiPo
    实时后端连接层 (bridge.js -> chat_server)
    - 经 http(s) 由 bridge 提供页面时启用 LIVE；file:// 双击则为演示模式
    ============================================================ */
-const LIVE=(location.protocol==='http:'||location.protocol==='https:');
+const LIVE=(location.protocol==='http:'||location.protocol==='https:'||(typeof window!=='undefined'&&!!window.zooNative));
 let net=null,online=false,myAccount=null,liveProfiles={};
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
 function liveStatus(txt,ok){const el=document.getElementById('netStatus');if(el){el.textContent=txt;el.className='net-status '+(ok?'on':'off');}}
 async function initLive(){
   if(!LIVE||typeof ZooNet==='undefined'){liveStatus('演示模式',false);return;}
-  const url=(location.protocol==='https:'?'wss://':'ws://')+location.host+'/';
-  net=new ZooNet(url);bindLive();
-  try{await net.connect();online=true;liveStatus('已连服务器 ✅',true);}
+  const native=(typeof window!=='undefined'&&!!window.zooNative);
+  net = native ? new ZooNet(null) : new ZooNet((location.protocol==='https:'?'wss://':'ws://')+location.host+'/');
+  bindLive();
+  try{await net.connect();online=true;liveStatus(native?'桌面版 · 已连服务器 ✅':'已连服务器 ✅',true);}
   catch(e){online=false;liveStatus('演示模式(未连服务器)',false);}
 }
 function bindLive(){const T=ZooNet.T;
