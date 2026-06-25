@@ -115,6 +115,9 @@ static void push_history(int fd, OfflineRow *rows, int n) {
         m.type     = rows[i].msg_type == 0 ? MSG_PRIVATE_CHAT : MSG_GROUP_CHAT;
         m.group_id = rows[i].msg_type == 1 ? rows[i].target_id : 0;
         snprintf(m.from_name, MAX_NAME_LEN, "%d", rows[i].from_id + ACCOUNT_BASE);
+        /* 私聊历史补上 to_name=接收方账号, 客户端才能正确归到对应会话 */
+        if (rows[i].msg_type == 0)
+            snprintf(m.to_name, MAX_NAME_LEN, "%d", rows[i].target_id + ACCOUNT_BASE);
         strncpy(m.from_nick, rows[i].from_name, MAX_NAME_LEN - 1);
         strncpy(m.timestamp, rows[i].sent_at,   sizeof(m.timestamp) - 1);
         strncpy(m.body,      rows[i].content,   MAX_BODY_LEN - 1);

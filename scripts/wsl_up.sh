@@ -36,7 +36,7 @@ FLUSH PRIVILEGES;
 SQL
 
 echo "[3/5] 编译 chat_server ..."
-if [ ! -x bin/chat_server ]; then make server; fi
+make server
 
 echo "[4/5] 启动 chat_server(:8888) ..."
 pkill -x chat_server 2>/dev/null || true

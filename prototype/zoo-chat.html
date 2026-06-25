@@ -597,7 +597,7 @@ async function doRegister(){const n=document.getElementById('rgName').value.trim
   if(p!==p2){err.textContent='两次密码不一致';return;}
   if(LIVE&&online){const r=await net.register(n,p);
     if(r.status!==ZooNet.RS.OK){err.textContent=r.body||'注册失败(昵称可能已被占用)';return;}
-    myAccount=r.body;const lr=await net.login(r.body,p);
+    myAccount=(r.body||'').trim();const lr=await net.login(myAccount,p);
     ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=r.body;ME.birth=b||ME.birth;
     if(lr.status===ZooNet.RS.OK){const pp=(lr.body||'').split('\n');ME.name=pp[1]||n;}
     liveResetData();refreshMe();renderChatList();renderContacts();toast('账号 '+r.body+' 创建成功 🎉');enterApp();return;}
@@ -913,9 +913,13 @@ function applyMembers(m){const c=chats.find(x=>x.gid===m.group_id);if(!c)return;
   if(currentChat===c.id){document.getElementById('chatSub').textContent=c.sub;if(panelStack.length)renderPanel();}}
 function ensureSingleChat(account,nick,color){let c=chats.find(x=>x.type==='single'&&x.friendId===account);
   if(!c){const u=ensureUser(account,nick,color);c=Object.assign(mk('c_'+account,u.name,u.animal),{type:'single',sub:u.online?'在线':'离线',time:'',preview:'',unread:0,friendId:account});chats.push(c);conversations[c.id]=[];}return c;}
+function curFriendId(){const c=chats.find(x=>x.id===currentChat);return c&&c.type==='single'?c.friendId:null;}
 function incomingMsg(kind,m){ensureUser(m.from_name,m.from_nick,0);let c;
   if(kind==='grp'){c=chats.find(x=>x.gid===m.group_id);if(!c){c=Object.assign(mk('g'+m.group_id,'群聊 '+m.group_id,'cat'),{type:'group',gid:m.group_id,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}}
-  else{const peer=(m.from_name===myAccount)?m.to_name:m.from_name;c=ensureSingleChat(peer,m.from_nick,0);}
+  else{const mine=(m.from_name===myAccount);
+    const peer=mine?(m.to_name||curFriendId()||m.from_name):m.from_name;
+    if(!peer)return;
+    c=ensureSingleChat(peer,mine?'':m.from_nick,0);}
   const from=(m.from_name===myAccount)?'me':m.from_name;
   const t=m.timestamp?new Date(m.timestamp.replace(/-/g,'/')):new Date();
   const msg={id:Date.now()+Math.random(),from,type:'text',text:m.body,time:isNaN(t)?new Date():t};
