@@ -1,0 +1,5 @@
+# 本项目主要在 Linux/WSL 下编译运行。
+# 强制文本文件 checkout 时使用 LF 换行, 避免在 Windows 上 clone 后
+# 到 WSL 里跑 bash/make 时出现 $'\r': command not found 之类错误。
+* text=auto eol=lf
+*.png binary
