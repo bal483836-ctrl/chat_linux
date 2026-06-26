@@ -37,9 +37,17 @@ sudo systemctl enable --now "$SVC"
 
 echo "[3/5] 建库 + 账号 ($DB_NAME / $DB_USER) ..."
 sudo mysql < sql/init.sql
+# 关键: MariaDB 会把 127.0.0.1 反解析成 localhost, 所以三种 host 都建一遍,
+# 避免出现 "Access denied for user 'chat'@'localhost'" 这种坑。
 sudo mysql <<SQL
+CREATE USER IF NOT EXISTS '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
 CREATE USER IF NOT EXISTS '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
+CREATE USER IF NOT EXISTS '${DB_USER}'@'%'         IDENTIFIED BY '${DB_PASS}';
+ALTER USER '${DB_USER}'@'localhost' IDENTIFIED BY '${DB_PASS}';
+ALTER USER '${DB_USER}'@'127.0.0.1' IDENTIFIED BY '${DB_PASS}';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'localhost';
 GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'127.0.0.1';
+GRANT ALL PRIVILEGES ON ${DB_NAME}.* TO '${DB_USER}'@'%';
 FLUSH PRIVILEGES;
 SQL
 
@@ -54,12 +62,12 @@ make clean >/dev/null 2>&1 || true
 make SRV_LD="-lpthread -lmariadb -lssl -lcrypto"
 
 echo ""
-echo "================ 完成! ================"
-echo "启动服务器(后台):"
-echo "  CHAT_DB_HOST=127.0.0.1 CHAT_DB_USER=$DB_USER CHAT_DB_PASS=$DB_PASS CHAT_DB_NAME=$DB_NAME ./bin/chat_server &"
+echo "================ 全部就绪! 你现在只需要做两件事 ================"
+echo "  1) 启动服务端(后台):"
+echo "       bash scripts/run_server.sh &"
+echo "  2) 启动客户端(二选一):"
+echo "       ./bin/chat_client                 # 原生 GTK 客户端"
+echo "       cd desktop && npm start -- --no-sandbox   # zoo 桌面版(需先装好 Node20)"
 echo ""
-echo "启动图形客户端:"
-echo "  ./bin/chat_client"
-echo ""
-echo "想本机自测: 再开一个终端多起一个 ./bin/chat_client, 两个窗口互相加好友聊天。"
-echo "======================================="
+echo "  想本机自测: 再开一个终端多起一个 ./bin/chat_client, 两个号互相加好友聊天。"
+echo "==============================================================="
