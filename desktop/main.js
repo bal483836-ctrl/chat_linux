@@ -24,11 +24,12 @@ function protoDir(){
 }
 function toRenderer(obj){ if (win && !win.isDestroyed()) win.webContents.send('zoo:msg', obj); }
 
-function connectTCP(){
-  if (tcp && !tcp.destroyed) return;
+function connectTCP(host){
+  const h = (host && String(host).trim()) || CHAT_HOST;
+  if (tcp){ try { tcp.removeAllListeners(); tcp.destroy(); } catch(e){} tcp = null; }
   tcpBuf = Buffer.alloc(0);
-  tcp = net.connect(CHAT_PORT, CHAT_HOST);
-  tcp.on('connect', ()=> toRenderer({ type:0, _ev:'bridge', ok:true,  msg:`connected ${CHAT_HOST}:${CHAT_PORT}` }));
+  tcp = net.connect(CHAT_PORT, h);
+  tcp.on('connect', ()=> toRenderer({ type:0, _ev:'bridge', ok:true,  msg:`connected ${h}:${CHAT_PORT}` }));
   tcp.on('data', (chunk)=>{
     tcpBuf = Buffer.concat([tcpBuf, chunk]);
     while (tcpBuf.length >= MSG_SIZE){
@@ -41,13 +42,19 @@ function connectTCP(){
   tcp.on('close', ()=> toRenderer({ type:0, _ev:'bridge', ok:false, msg:'connection closed' }));
 }
 
-ipcMain.handle('zoo:connect', ()=>{ connectTCP(); return true; });
+ipcMain.handle('zoo:connect', (_e, host)=>{ connectTCP(host); return true; });
 ipcMain.on('zoo:send', (_e, obj)=>{ if (tcp && !tcp.destroyed) { try { tcp.write(encodeMsg(obj)); } catch(e){} } });
+
+/* 无边框窗口控制(对应界面里的 —/▢/✕) */
+ipcMain.on('win:min',   ()=>{ if (win) win.minimize(); });
+ipcMain.on('win:max',   ()=>{ if (win) { win.isMaximized() ? win.unmaximize() : win.maximize(); } });
+ipcMain.on('win:close', ()=>{ if (win) win.close(); });
 
 function createWindow(){
   win = new BrowserWindow({
     width: 1200, height: 800, minWidth: 940, minHeight: 600,
     title: 'zoo', backgroundColor: '#f5942e', autoHideMenuBar: true, show: false,
+    frame: false,            /* 无系统边框: 只保留界面里那一层标题栏 */
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true, nodeIntegration: false,

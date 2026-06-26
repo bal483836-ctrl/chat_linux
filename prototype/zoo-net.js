@@ -48,7 +48,7 @@ class ZooNet {
   /* 两种传输:
    *   - 桌面版(Electron): window.zooNative(主进程直连 C 服务器 TCP)
    *   - 浏览器版: WebSocket -> bridge.js -> TCP */
-  connect(){
+  connect(host){
     const native = (typeof window !== 'undefined' && window.zooNative) ? window.zooNative : null;
     return new Promise((resolve, reject)=>{
       let settled = false;
@@ -58,8 +58,8 @@ class ZooNet {
       };
       if (native){
         this.native = native;
-        native.onMsg(m=>this._dispatch(m));
-        Promise.resolve(native.connect()).catch(e=>{ if(!settled){settled=true; reject(e);} });
+        if (!this._nativeBound){ native.onMsg(m=>this._dispatch(m)); this._nativeBound = true; }
+        Promise.resolve(native.connect(host)).catch(e=>{ if(!settled){settled=true; reject(e);} });
       } else {
         try { this.ws = new WebSocket(this.url); } catch(e){ return reject(e); }
         this.ws.onmessage = (ev)=>{ let m; try { m = JSON.parse(ev.data); } catch(e){ return; } this._dispatch(m); };

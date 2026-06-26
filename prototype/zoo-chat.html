@@ -33,9 +33,13 @@ input,textarea{font:inherit;}
 .window{position:relative;width:min(1180px,98vw);height:min(760px,96vh);border-radius:22px;overflow:hidden;
   box-shadow:0 50px 110px rgba(80,40,10,.55);display:flex;flex-direction:column;
   background:radial-gradient(circle at 50% 30%,rgba(255,255,255,.35),transparent 55%),linear-gradient(160deg,var(--bg1) 0%,var(--bg2) 50%,var(--bg3) 100%);}
-.titlebar{height:44px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;background:rgba(120,60,20,.16);}
+/* 桌面(Electron 无边框)模式: 整窗铺满, 无圆角/阴影, 组件随窗口拉伸(像 QQ) */
+body.native{background:transparent;}
+body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
+.titlebar{height:44px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 16px;background:rgba(120,60,20,.16);-webkit-app-region:drag;user-select:none;}
+.tb-dots,.tb-win,.net-status,.tb-logo{-webkit-app-region:no-drag;}
 .tb-dots{display:flex;gap:8px;}
-.tb-dots i{width:13px;height:13px;border-radius:50%;display:block;box-shadow:inset 0 -2px 3px rgba(0,0,0,.15);}
+.tb-dots i{width:13px;height:13px;border-radius:50%;display:block;box-shadow:inset 0 -2px 3px rgba(0,0,0,.15);cursor:pointer;}
 .tb-dots .r{background:#ff6159;}.tb-dots .y{background:#ffbd2e;}.tb-dots .g{background:#28c840;}
 .tb-logo{font-size:21px;font-weight:900;color:#fff;text-shadow:0 3px 0 rgba(200,90,30,.5);letter-spacing:2px;}
 .tb-spacer{flex:1;}
@@ -330,17 +334,33 @@ input,textarea{font:inherit;}
 
 .toast{position:absolute;left:50%;top:70px;transform:translateX(-50%) translateY(-20px);background:rgba(60,40,28,.95);color:#fff;padding:12px 24px;border-radius:16px;font-size:14px;font-weight:800;z-index:300;opacity:0;pointer-events:none;transition:.25s;white-space:nowrap;}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+/* 头像相机角标 */
+.av-cam{position:absolute;right:-2px;bottom:-2px;width:32px;height:32px;border-radius:50%;background:var(--yellow);color:#7a5310;
+  display:flex;align-items:center;justify-content:center;font-size:15px;box-shadow:0 3px 8px rgba(180,120,0,.4);border:3px solid var(--panel);}
+/* 头像裁剪弹层 */
+.crop-mask{position:absolute;inset:0;background:rgba(60,35,15,.55);z-index:260;display:none;align-items:center;justify-content:center;}
+.crop-mask.show{display:flex;}
+.crop-box{width:320px;max-width:92%;background:var(--panel);border-radius:24px;padding:20px;box-shadow:var(--shadow-panel);}
+.crop-box h3{text-align:center;font-size:17px;font-weight:900;margin-bottom:14px;}
+.crop-stage{position:relative;width:240px;height:240px;margin:0 auto;border-radius:16px;overflow:hidden;background:#2c2420;touch-action:none;cursor:grab;}
+.crop-stage:active{cursor:grabbing;}
+.crop-stage #cropImg{position:absolute;top:0;left:0;transform-origin:0 0;will-change:transform;-webkit-user-drag:none;user-select:none;pointer-events:none;}
+.crop-ring{position:absolute;inset:0;pointer-events:none;box-shadow:0 0 0 999px rgba(0,0,0,.45);border-radius:50%;}
+.crop-zoom{display:flex;align-items:center;gap:10px;margin:14px 4px 4px;color:var(--ink-soft);font-weight:900;}
+.crop-zoom input{flex:1;accent-color:var(--green);}
+.crop-foot{display:flex;gap:10px;margin-top:14px;}
+.crop-foot .pill{flex:1;}
 .hidden{display:none!important;}
 </style>
 </head>
 <body>
 <div class="window">
   <div class="titlebar">
-    <div class="tb-dots"><i class="r"></i><i class="y"></i><i class="g"></i></div>
+    <div class="tb-dots"><i class="r" title="关闭" onclick="winCtl('close')"></i><i class="y" title="最小化" onclick="winCtl('min')"></i><i class="g" title="最大化" onclick="winCtl('max')"></i></div>
     <div class="tb-logo">zoo</div>
     <div class="tb-spacer"></div>
     <div class="net-status off" id="netStatus">连接中…</div>
-    <div class="tb-win"><span title="最小化">—</span><span title="最大化">▢</span><span title="关闭" onclick="toast('（原型）关闭窗口')">✕</span></div>
+    <div class="tb-win"><span title="最小化" onclick="winCtl('min')">—</span><span title="最大化" onclick="winCtl('max')">▢</span><span title="关闭" onclick="winCtl('close')">✕</span></div>
   </div>
 
   <div class="stage">
@@ -357,6 +377,7 @@ input,textarea{font:inherit;}
       <div class="login-card" id="loginCard">
         <h2>登录 zoo 🎉</h2>
         <div class="lc-sub">快来和小伙伴们交流吧</div>
+        <div class="field" id="srvHostField" style="display:none"><span class="ic">🖥️</span><input id="srvHost" placeholder="服务器地址 (默认 127.0.0.1)"></div>
         <div class="field"><span class="ic">📧</span><input id="lgEmail" placeholder="邮箱 / 账号" value="party@zoo.fun"></div>
         <div class="field"><span class="ic">🔒</span><input id="lgPwd" type="password" placeholder="密码" value="123456"></div>
         <div class="err" id="lgErr"></div>
@@ -407,10 +428,6 @@ input,textarea{font:inherit;}
             <div class="list-head"><h2>联系人</h2><button class="head-add" id="addBtnCt" onclick="toggleAddMenu(event)">＋</button></div>
             <div class="search"><span>🔍</span><input placeholder="搜索联系人" oninput="filterContacts(this.value)"></div>
             <div class="list-scroll" id="contactList"></div>
-          </div>
-          <div class="popmenu" id="addMenu">
-            <div class="pm-item" onclick="hideAddMenu();showPage('addFriend')">🙋 加好友 / 群</div>
-            <div class="pm-item" onclick="hideAddMenu();showPage('createGroup')">👥 创建群聊</div>
           </div>
         </div>
 
@@ -490,6 +507,29 @@ input,textarea{font:inherit;}
     </div>
   </div>
 
+  <!-- + 下拉(置于顶层, 避免被列表/聊天面板裁切) -->
+  <div class="popmenu" id="addMenu">
+    <div class="pm-item" onclick="hideAddMenu();showPage('addFriend')">🙋 加好友 / 群</div>
+    <div class="pm-item" onclick="hideAddMenu();showPage('createGroup')">👥 创建群聊</div>
+  </div>
+
+  <!-- 头像本地选图 + 裁剪 -->
+  <input type="file" id="avatarInput" accept="image/*" style="display:none">
+  <div class="crop-mask" id="cropMask">
+    <div class="crop-box">
+      <h3>调整头像</h3>
+      <div class="crop-stage" id="cropStage">
+        <img id="cropImg" draggable="false" alt="">
+        <div class="crop-ring"></div>
+      </div>
+      <div class="crop-zoom"><span>－</span><input type="range" id="cropZoom" min="1" max="3" step="0.01" value="1"><span>＋</span></div>
+      <div class="crop-foot">
+        <button class="pill cream" onclick="closeCrop()">取消</button>
+        <button class="pill green" onclick="applyCrop()">使用</button>
+      </div>
+    </div>
+  </div>
+
   <input type="file" id="fileInput" style="display:none">
   <input type="file" id="imgInput" accept="image/*" style="display:none">
   <div class="toast" id="toast"></div>
@@ -563,10 +603,12 @@ const EMOJIS=['😀','😂','🥰','😎','🤩','😭','😡','👍','🙏','�
 let currentChat=null, ctxTarget=null, panelStack=[];
 function userById(id){if(id==='me')return ME;return friends.find(f=>f.id===id)||strangers.find(s=>s.id===id)||{name:'神秘伙伴',color:'c-cat',animal:'cat',img:ASSET('cat'),emoji:'❓'};}
 function avKey(u){return u.animal||((u.color||'c-cat').slice(2));}
-/* 头像优先用 assets/pa/<key>.png(放真实猛兽派对角色图), 缺省回退占位图, 再回退 emoji */
+/* 头像: 自定义上传图优先; 否则 assets/pa/<key>.png(真实角色图) -> 占位图 -> emoji */
 function avHTML(u,size,sq){const k=avKey(u);
+  const src=u.customImg?u.customImg:('assets/pa/'+k+'.png');
+  const fb=u.customImg?'':('assets/'+k+'.png');
   return `<div class="av av-${size} ${u.color||('c-'+k)}${sq?' av-sq':''}">
-    <img src="assets/pa/${k}.png" data-fb="assets/${k}.png" alt=""
+    <img src="${src}" ${fb?`data-fb="${fb}"`:''} alt=""
       onerror="if(this.dataset.fb){this.src=this.dataset.fb;this.dataset.fb='';}else{this.style.display='none';this.nextElementSibling.style.display='inline-block';}">
     <span class="fb" style="display:none">${u.emoji||'❓'}</span></div>`;}
 
@@ -583,6 +625,7 @@ function enterApp(){const lg=document.getElementById('login');lg.style.opacity='
   setTimeout(()=>{lg.classList.add('hidden');const a=document.getElementById('app');a.style.display='flex';a.style.opacity='0';a.style.transition='opacity .4s';void a.offsetWidth;a.style.opacity='1';},500);}
 async function doLogin(){const acc=document.getElementById('lgEmail').value.trim(),p=document.getElementById('lgPwd').value.trim();
   if(!acc||!p){document.getElementById('lgErr').textContent='请填写账号和密码';return;}
+  if(IS_NATIVE){const ok=await ensureServer();if(!ok){document.getElementById('lgErr').textContent='连不上服务器，请检查服务器地址';return;}}
   if(LIVE&&online){const r=await net.login(acc,p);
     if(r.status!==ZooNet.RS.OK){document.getElementById('lgErr').textContent=r.body||'账号或密码错误';return;}
     const parts=(r.body||'').split('\n');myAccount=parts[0];ME.zoo=parts[0];if(parts[1])ME.name=parts[1];
@@ -595,6 +638,7 @@ async function doRegister(){const n=document.getElementById('rgName').value.trim
   if(!e||!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)){err.textContent='请输入有效邮箱';return;}
   if(p.length<6){err.textContent='密码至少 6 位';return;}
   if(p!==p2){err.textContent='两次密码不一致';return;}
+  if(IS_NATIVE){const ok=await ensureServer();if(!ok){err.textContent='连不上服务器，请检查服务器地址';return;}}
   if(LIVE&&online){const r=await net.register(n,p);
     if(r.status!==ZooNet.RS.OK){err.textContent=r.body||'注册失败(昵称可能已被占用)';return;}
     myAccount=(r.body||'').trim();const lr=await net.login(myAccount,p);
@@ -772,7 +816,9 @@ let profileEdit=false;
 function renderProfile(u){const isMe=u.id==='me';const inner=document.getElementById('infoInner');
   if(LIVE&&online&&!isMe){if(liveProfiles[u.id])u.birth=liveProfiles[u.id].birth;else net.profileGet(u.id);}
   const hero=`<div style="display:flex;flex-direction:column;align-items:center;margin:6px 0 4px;">
-      ${avHTML(u,'xl')}
+      <div style="position:relative;${isMe?'cursor:pointer':''}" ${isMe?'onclick="pickAvatar()" title="点击更换头像"':''}>
+        ${avHTML(u,'xl')}${isMe?'<div class="av-cam">📷</div>':''}
+      </div>
       <div style="font-size:19px;font-weight:900;margin-top:12px;">${esc(u.name)}</div>
     </div>`;
   const fields=(isMe&&profileEdit)
@@ -867,6 +913,49 @@ function updatePip(){const total=chats.reduce((a,c)=>a+(c.unread||0),0);const p=
 document.addEventListener('click',e=>{const pop=document.getElementById('emojiPop');if(pop&&pop.classList.contains('show')&&!pop.contains(e.target)&&!e.target.closest('.tool-ic'))closeEmoji();
   if(!e.target.closest('#addMenu')&&!e.target.closest('.head-add'))hideAddMenu();});
 
+/* ===== 窗口控制(桌面无边框时真实生效) ===== */
+function winCtl(act){
+  if(typeof window!=='undefined'&&window.zooNative&&window.zooNative.win){
+    if(act==='min')window.zooNative.win.minimize();
+    else if(act==='max')window.zooNative.win.toggleMaximize();
+    else if(act==='close')window.zooNative.win.close();
+    return;
+  }
+  toast(act==='close'?'（浏览器版）请直接关闭标签页':'（浏览器版）窗口控制由系统负责');
+}
+
+/* ===== 头像: 选本地图片 + 圆形裁剪 ===== */
+let cropState=null;
+function pickAvatar(){const inp=document.getElementById('avatarInput');inp.value='';
+  inp.onchange=()=>{const f=inp.files[0];if(!f)return;const url=URL.createObjectURL(f);openCrop(url);};inp.click();}
+function openCrop(url){const img=document.getElementById('cropImg');
+  img.onload=()=>{const S=240;const base=Math.max(S/img.naturalWidth,S/img.naturalHeight);
+    cropState={img,S,base,zoom:1,x:0,y:0,nw:img.naturalWidth,nh:img.naturalHeight};
+    document.getElementById('cropZoom').value=1;centerCrop();applyCropTransform();
+    document.getElementById('cropMask').classList.add('show');};
+  img.src=url;}
+function centerCrop(){const s=cropState;const w=s.nw*s.base*s.zoom,h=s.nh*s.base*s.zoom;s.x=(s.S-w)/2;s.y=(s.S-h)/2;}
+function clampCrop(){const s=cropState;const w=s.nw*s.base*s.zoom,h=s.nh*s.base*s.zoom;
+  s.x=Math.min(0,Math.max(s.S-w,s.x));s.y=Math.min(0,Math.max(s.S-h,s.y));}
+function applyCropTransform(){const s=cropState;clampCrop();
+  s.img.style.transform=`translate(${s.x}px,${s.y}px) scale(${s.base*s.zoom})`;}
+function closeCrop(){document.getElementById('cropMask').classList.remove('show');cropState=null;}
+function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=document.createElement('canvas');cv.width=OUT;cv.height=OUT;
+  const ctx=cv.getContext('2d');const r=OUT/s.S;
+  ctx.drawImage(s.img,s.x*r,s.y*r,s.nw*s.base*s.zoom*r,s.nh*s.base*s.zoom*r);
+  ME.customImg=cv.toDataURL('image/png');
+  closeCrop();refreshMe();renderChatList();renderContacts();if(panelStack.length)renderPanel();toast('头像已更新 ✅');
+  if(LIVE&&online&&net&&net.avatarUpload){try{net.avatarUpload(ME.customImg);}catch(e){}}}
+(function bindCropDrag(){const stage=document.getElementById('cropStage');if(!stage)return;
+  let drag=false,px=0,py=0;
+  const down=e=>{if(!cropState)return;drag=true;const p=e.touches?e.touches[0]:e;px=p.clientX;py=p.clientY;};
+  const move=e=>{if(!drag||!cropState)return;const p=e.touches?e.touches[0]:e;cropState.x+=p.clientX-px;cropState.y+=p.clientY-py;px=p.clientX;py=p.clientY;applyCropTransform();if(e.cancelable)e.preventDefault();};
+  const up=()=>{drag=false;};
+  stage.addEventListener('mousedown',down);window.addEventListener('mousemove',move);window.addEventListener('mouseup',up);
+  stage.addEventListener('touchstart',down,{passive:true});window.addEventListener('touchmove',move,{passive:false});window.addEventListener('touchend',up);
+  const z=document.getElementById('cropZoom');if(z)z.addEventListener('input',()=>{if(!cropState)return;cropState.zoom=parseFloat(z.value);applyCropTransform();});
+})();
+
 /* ============================================================
    实时后端连接层 (bridge.js -> chat_server)
    - 经 http(s) 由 bridge 提供页面时启用 LIVE；file:// 双击则为演示模式
@@ -875,15 +964,32 @@ const LIVE=(location.protocol==='http:'||location.protocol==='https:'||(typeof w
 let net=null,online=false,myAccount=null,liveProfiles={};
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
 function liveStatus(txt,ok){const el=document.getElementById('netStatus');if(el){el.textContent=txt;el.className='net-status '+(ok?'on':'off');}}
+const IS_NATIVE=(typeof window!=='undefined'&&!!window.zooNative);
+let curHost=null,liveBound=false;
+function savedHost(){try{return localStorage.getItem('zoo_host')||'127.0.0.1';}catch(e){return '127.0.0.1';}}
 async function initLive(){
+  if(IS_NATIVE){document.body.classList.add('native');
+    const f=document.getElementById('srvHostField');if(f)f.style.display='';
+    const h=document.getElementById('srvHost');if(h)h.value=savedHost();}
   if(!LIVE||typeof ZooNet==='undefined'){liveStatus('演示模式',false);return;}
-  const native=(typeof window!=='undefined'&&!!window.zooNative);
-  net = native ? new ZooNet(null) : new ZooNet((location.protocol==='https:'?'wss://':'ws://')+location.host+'/');
+  net = IS_NATIVE ? new ZooNet(null) : new ZooNet((location.protocol==='https:'?'wss://':'ws://')+location.host+'/');
   bindLive();
-  try{await net.connect();online=true;liveStatus(native?'桌面版 · 已连服务器 ✅':'已连服务器 ✅',true);}
-  catch(e){online=false;liveStatus('演示模式(未连服务器)',false);}
+  await connectLive(IS_NATIVE?savedHost():null);
 }
-function bindLive(){const T=ZooNet.T;
+async function connectLive(host){
+  try{await net.connect(host);online=true;curHost=host;liveStatus(IS_NATIVE?'桌面版 · 已连服务器 ✅':'已连服务器 ✅',true);return true;}
+  catch(e){online=false;liveStatus(IS_NATIVE?'未连服务器(检查地址)':'演示模式(未连服务器)',false);return false;}
+}
+/* 桌面版: 登录/注册前确保已连到用户填写的服务器地址 */
+async function ensureServer(){
+  if(!IS_NATIVE||!net)return online;
+  const h=(document.getElementById('srvHost')?.value||'').trim()||'127.0.0.1';
+  try{localStorage.setItem('zoo_host',h);}catch(e){}
+  if(online&&h===curHost)return true;
+  liveStatus('连接中…',false);
+  return await connectLive(h);
+}
+function bindLive(){if(liveBound)return;liveBound=true;const T=ZooNet.T;
   net.on(T.FRIEND_LIST,m=>applyFriendList(m.body));
   net.on(T.GROUP_LIST,m=>applyGroupList(m.body));
   net.on(T.GROUP_MEMBERS,m=>applyMembers(m));
