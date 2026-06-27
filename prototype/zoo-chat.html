@@ -97,7 +97,9 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
 .parade .av:nth-child(2){animation-delay:.2s;}.parade .av:nth-child(3){animation-delay:.4s;}
 .parade .av:nth-child(4){animation-delay:.6s;}.parade .av:nth-child(5){animation-delay:.8s;}
 @keyframes jelly{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-12px) scale(1.06)}}
-.login-card{width:368px;background:var(--panel);border-radius:30px;padding:28px;box-shadow:var(--shadow-panel);z-index:2;max-height:92%;overflow-y:auto;}
+.login-card{width:440px;background:var(--panel);border-radius:30px;padding:30px 34px;box-shadow:var(--shadow-panel);z-index:2;max-height:92%;overflow-y:auto;}
+.field .eye{cursor:pointer;font-size:18px;opacity:.6;user-select:none;padding-left:4px;}
+.field .eye:hover{opacity:1;}
 .login-card h2{font-size:23px;font-weight:900;margin-bottom:4px;}
 .login-card .lc-sub{color:var(--ink-soft);font-size:14px;margin-bottom:20px;}
 .field{display:flex;align-items:center;gap:11px;background:var(--cream);border-radius:16px;padding:13px 16px;margin-bottom:12px;box-shadow:inset 0 2px 6px rgba(160,100,60,.12);}
@@ -377,11 +379,11 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
         <h2>登录 zoo 🎉</h2>
         <div class="lc-sub">快来和小伙伴们交流吧</div>
         <div class="field" id="srvHostField" style="display:none"><span class="ic">🖥️</span><input id="srvHost" placeholder="服务器地址 (默认 127.0.0.1)"></div>
-        <div class="field"><span class="ic">📧</span><input id="lgEmail" placeholder="邮箱 / 账号" value="party@zoo.fun"></div>
-        <div class="field"><span class="ic">🔒</span><input id="lgPwd" type="password" placeholder="密码" value="123456"></div>
+        <div class="field"><span class="ic">📧</span><input id="lgEmail" placeholder="邮箱 / 账号"></div>
+        <div class="field"><span class="ic">🔒</span><input id="lgPwd" type="password" placeholder="密码"><span class="eye" onclick="togglePw('lgPwd',this)">👁️</span></div>
         <div class="err" id="lgErr"></div>
         <div class="row-opts">
-          <div class="chk on" onclick="this.classList.toggle('on')"><i></i>记住我 30 天</div>
+          <div class="chk on" id="rememberChk" onclick="this.classList.toggle('on')"><i></i>记住我 30 天</div>
           <a onclick="toast('已发送找回邮件 ✉️')">忘记密码?</a>
         </div>
         <button class="pill green" onclick="doLogin()">▶ 登录</button>
@@ -397,8 +399,8 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
         <div class="field"><span class="ic">🐱</span><input id="rgName" placeholder="昵称"></div>
         <div class="field"><span class="ic">📧</span><input id="rgEmail" placeholder="邮箱"></div>
         <div class="field"><span class="ic">🎂</span><input id="rgBirth" type="date"></div>
-        <div class="field"><span class="ic">🔒</span><input id="rgPwd" type="password" placeholder="设置密码"></div>
-        <div class="field"><span class="ic">🔑</span><input id="rgPwd2" type="password" placeholder="确认密码"></div>
+        <div class="field"><span class="ic">🔒</span><input id="rgPwd" type="password" placeholder="设置密码"><span class="eye" onclick="togglePw('rgPwd',this)">👁️</span></div>
+        <div class="field"><span class="ic">🔑</span><input id="rgPwd2" type="password" placeholder="确认密码"><span class="eye" onclick="togglePw('rgPwd2',this)">👁️</span></div>
         <div class="err" id="rgErr"></div>
         <button class="pill green" onclick="doRegister()">🎉 创建账号并进入</button>
         <div class="signup">已有账号? <a onclick="showRegister(false)">返回登录</a></div>
@@ -621,6 +623,21 @@ function avHTML(u,size,sq){const k=avKey(u);
     <span class="fb" style="display:none">${u.emoji||'❓'}</span></div>`;}
 
 /* ===== 登录 / 注册 ===== */
+function togglePw(id,el){const i=document.getElementById(id);if(!i)return;const show=i.type==='password';i.type=show?'text':'password';el.textContent=show?'🙈':'👁️';el.style.opacity=show?1:.6;}
+function loadRemember(){try{const s=JSON.parse(localStorage.getItem('zoo_login')||'{}');
+  if(s.host&&document.getElementById('srvHost'))document.getElementById('srvHost').value=s.host;
+  if(s.acc)document.getElementById('lgEmail').value=s.acc;
+  if(s.pwd)document.getElementById('lgPwd').value=s.pwd;
+  const chk=document.getElementById('rememberChk');if(chk)chk.classList.toggle('on',s.remember!==false);
+}catch(e){}}
+function saveRemember(acc,pwd){const chk=document.getElementById('rememberChk');const on=chk&&chk.classList.contains('on');
+  try{ if(on)localStorage.setItem('zoo_login',JSON.stringify({host:((document.getElementById('srvHost')||{}).value||'').trim(),acc,pwd,remember:true}));
+       else localStorage.removeItem('zoo_login'); }catch(e){}}
+/* 头像持久化(按账号), 保证个人资料与聊天里的“我”头像一致, 且跨会话保留 */
+function restoreMyAvatar(acc){try{const s=JSON.parse(localStorage.getItem('zoo_av_'+acc)||'null');if(!s)return;
+  if(s.animal){ME.animal=s.animal;ME.color='c-'+s.animal;ME.img=ASSET(s.animal);ME.emoji=(ANIMALS.find(a=>a.key===s.animal)||{}).emoji;}
+  if(s.customImg)ME.customImg=s.customImg;else delete ME.customImg;}catch(e){}}
+function saveMyAvatar(){try{if(!myAccount)return;localStorage.setItem('zoo_av_'+myAccount,JSON.stringify({animal:ME.animal,customImg:ME.customImg||''}));}catch(e){}}
 function showRegister(on){document.getElementById('loginCard').classList.toggle('hidden',on);document.getElementById('registerCard').classList.toggle('hidden',!on);
   document.getElementById('lgErr').textContent='';document.getElementById('rgErr').textContent='';}
 let regPick='cat';
@@ -637,8 +654,9 @@ async function doLogin(){const acc=document.getElementById('lgEmail').value.trim
   if(LIVE&&online){const r=await net.login(acc,p);
     if(r.status!==ZooNet.RS.OK){document.getElementById('lgErr').textContent=r.body||'账号或密码错误';return;}
     const parts=(r.body||'').split('\n');myAccount=parts[0];ME.zoo=parts[0];if(parts[1])ME.name=parts[1];
+    restoreMyAvatar(myAccount);saveRemember(acc,p);
     liveResetData();refreshMe();renderChatList();renderContacts();enterApp();return;}
-  enterApp();}
+  saveRemember(acc,p);enterApp();}
 async function doRegister(){const n=document.getElementById('rgName').value.trim(),e=document.getElementById('rgEmail').value.trim(),
   b=document.getElementById('rgBirth').value,p=document.getElementById('rgPwd').value,p2=document.getElementById('rgPwd2').value;
   const err=document.getElementById('rgErr');
@@ -652,11 +670,12 @@ async function doRegister(){const n=document.getElementById('rgName').value.trim
     myAccount=(r.body||'').trim();const lr=await net.login(myAccount,p);
     ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=r.body;ME.birth=b||ME.birth;
     if(lr.status===ZooNet.RS.OK){const pp=(lr.body||'').split('\n');ME.name=pp[1]||n;}
+    saveMyAvatar();saveRemember(e,p);
     liveResetData();refreshMe();renderChatList();renderContacts();toast('账号 '+r.body+' 创建成功 🎉');enterApp();return;}
   ME.name=n;ME.birth=b||ME.birth;ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);
   ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=(e.split('@')[0]||'zoo')+'_'+Math.floor(Math.random()*900+100);
   refreshMe();toast('账号创建成功 🎉');enterApp();}
-function refreshMe(){document.getElementById('navMeAv').innerHTML=avHTML(ME,'lg',true);document.getElementById('navMeName').textContent=ME.name.slice(0,4);}
+function refreshMe(){document.getElementById('navMeAv').innerHTML=avHTML(ME,'lg');document.getElementById('navMeName').textContent=ME.name.slice(0,4);}
 function logout(){try{if(net&&online)net.logout();}catch(e){}location.reload();}
 
 /* ===== Tab / + 菜单 ===== */
@@ -897,7 +916,7 @@ function renderProfile(u){const isMe=u.id==='me';const inner=document.getElement
               :`<button class="pill green sm" style="width:100%" onclick="msgFromProfile('${u.id}')">💬 发消息</button>`}</div>`;
   inner.innerHTML=panelHead(isMe?'我的资料':'个人资料')+`<div class="info-body">${hero}${fields}</div>`;}
 function saveProfile(){const n=document.getElementById('pfName').value.trim();const b=document.getElementById('pfBirth').value;if(n)ME.name=n;ME.birth=b;profileEdit=false;
-  if(LIVE&&online)net.profileSet(ME.name,ME.birth||'');refreshMe();renderChatList();renderProfile(ME);toast('资料已保存 ✅');}
+  if(LIVE&&online)net.profileSet(ME.name,ME.birth||'');refreshMe();renderChatList();if(currentChat)renderMessages();renderProfile(ME);toast('资料已保存 ✅');}
 function msgFromProfile(id){const f=userById(id);closeInfo();if(f&&f.id!=='me')openSingleChatByFriend(f);}
 
 /* --- 邀请进群(页内) --- */
@@ -1008,10 +1027,10 @@ function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=docum
   const ctx=cv.getContext('2d');const r=OUT/s.S;
   ctx.drawImage(s.img,s.x*r,s.y*r,s.nw*s.base*s.zoom*r,s.nh*s.base*s.zoom*r);
   const data=cv.toDataURL('image/png');
-  if(cropTarget==='me'){ME.customImg=data;refreshMe();}
+  if(cropTarget==='me'){ME.customImg=data;refreshMe();saveMyAvatar();}
   else{const c=chats.find(x=>x.id===cropTarget);if(c)c.customImg=data;}
   closeCrop();renderChatList();renderContacts();
-  if(currentChat){const cc=chats.find(x=>x.id===currentChat);if(cc&&document.getElementById('headAv'))document.getElementById('headAv').innerHTML=avHTML(cc,'md');}
+  if(currentChat){const cc=chats.find(x=>x.id===currentChat);if(cc&&document.getElementById('headAv'))document.getElementById('headAv').innerHTML=avHTML(cc,'md');renderMessages();}
   if(panelStack.length)renderPanel();toast('头像已更新 ✅');}
 (function bindCropDrag(){const stage=document.getElementById('cropStage');if(!stage)return;
   let drag=false,px=0,py=0;
@@ -1109,7 +1128,7 @@ function setOnlineState(account,on){const f=friends.find(x=>x.id===account);if(f
 
 /* init */
 document.getElementById('parade').innerHTML=['croc','bunny','dog','tiger','wolf'].map(k=>avHTML({color:'c-'+k,img:ASSET(k),emoji:(ANIMALS.find(a=>a.key===k)||{}).emoji},'lg')).join('');
-refreshMe();renderChatList();renderContacts();buildEmoji();buildRegAvatars();updatePip();initLive();
+refreshMe();renderChatList();renderContacts();buildEmoji();buildRegAvatars();updatePip();initLive();loadRemember();
 </script>
 </body>
 </html>
