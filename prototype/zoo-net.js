@@ -74,7 +74,7 @@ class ZooNet {
   _req(obj){ return new Promise(res=>{ this.respQ.push(res); this.send(obj); }); }
 
   /* ---- 账号 ---- */
-  register(nick, pass){ return this._req({type:T.REGISTER, body: nick + '\n' + pass}); }
+  register(nick, pass, email){ return this._req({type:T.REGISTER, body: nick + '\n' + pass + (email ? ('\n' + email) : '')}); }
   login(account, pass){ return this._req({type:T.LOGIN,   body: account + '\n' + pass}); }
   logout(){ this.send({type:T.LOGOUT}); }
 
@@ -108,9 +108,11 @@ class ZooNet {
 
   /* ---- 解析服务器多行文本载荷 ---- */
   static parseFriendList(body){ return splitLines(body).map(l=>{ const p=l.split('\t');
-    return { account:p[0], nick:p[1], color:+p[2]||0, online:+p[3]===1, black:+p[4]===1 }; }); }
+    return { account:p[0], nick:p[1], color:+p[2]||0, online:+p[3]===1, black:+p[4]===1, remark:p[5]||'' }; }); }
   static parseGroupList(body){ return splitLines(body).map(l=>{ const p=l.split('\t');
     return { gid:+p[0], name:p[1], owner:p[2] }; }); }
+  static parseFreqList(body){ return splitLines(body).map(l=>{ const p=l.split('\t');
+    return { reqid:+p[0], account:p[1], nick:p[2], color:+p[3]||0, time:p[4], hello:p[5]||'' }; }); }
   static parseMembers(body){ return splitLines(body).map(l=>{ const p=l.split('\t');
     return { account:p[0], nick:p[1], color:+p[2]||0, online:+p[3]===1 }; }); }
   static parseSearch(body){ return splitLines(body).map(l=>{ const p=l.split('\t');

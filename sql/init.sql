@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS users (
     nickname      VARCHAR(32)  NOT NULL,
     /* 课程示例: 简单 sha1 即可, 生产环境应使用 bcrypt/argon2 */
     password      VARCHAR(64)  NOT NULL,
+    email         VARCHAR(64)  NULL UNIQUE,          /* 注册邮箱, 唯一, 可用于登录 */
     avatar_color  TINYINT      NOT NULL DEFAULT 0,
     birthday      DATE         NULL,                 /* 个人资料: 出生日期 */
     online        TINYINT      NOT NULL DEFAULT 0,

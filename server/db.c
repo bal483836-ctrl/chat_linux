@@ -81,16 +81,22 @@ int db_user_id_by_nick(const char *nick) {
     return id;
 }
 
-int db_register(const char *nickname, const char *pass) {
+int db_register(const char *nickname, const char *pass, const char *email) {
     char hash[64]; sha1_hex(pass, hash);
     char en[128]; esc(nickname, en, sizeof(en));
+    char ee[160]; if (email && email[0]) esc(email, ee, sizeof(ee)); else ee[0] = 0;
     int color = 0;
     for (const char *p = nickname; *p; ++p) color = (color * 131 + (unsigned char)*p) & 0xFFFF;
     color %= 10;
-    char sql[512];
-    snprintf(sql, sizeof(sql),
-        "INSERT INTO users(nickname,password,avatar_color) VALUES('%s','%s',%d)",
-        en, hash, color);
+    char sql[600];
+    if (ee[0])
+        snprintf(sql, sizeof(sql),
+            "INSERT INTO users(nickname,password,avatar_color,email) VALUES('%s','%s',%d,'%s')",
+            en, hash, color, ee);
+    else
+        snprintf(sql, sizeof(sql),
+            "INSERT INTO users(nickname,password,avatar_color) VALUES('%s','%s',%d)",
+            en, hash, color);
     LOCK();
     int rc;
     if (mysql_query(g_conn, sql) != 0) {
@@ -100,6 +106,40 @@ int db_register(const char *nickname, const char *pass) {
     rc = (int)mysql_insert_id(g_conn);
     UNLOCK();
     return rc;
+}
+
+int db_email_exists(const char *email) {
+    if (!email || !email[0]) return 0;
+    char ee[160]; esc(email, ee, sizeof(ee));
+    char sql[256];
+    snprintf(sql, sizeof(sql), "SELECT id FROM users WHERE email='%s'", ee);
+    LOCK();
+    int yes = 0;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        if (r && mysql_fetch_row(r)) yes = 1;
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return yes;
+}
+
+int db_login_by_email(const char *email, const char *pass) {
+    char hash[64]; sha1_hex(pass, hash);
+    char ee[160]; esc(email, ee, sizeof(ee));
+    char sql[320];
+    snprintf(sql, sizeof(sql),
+        "SELECT id FROM users WHERE email='%s' AND password='%s'", ee, hash);
+    LOCK();
+    int id = -RS_AUTH_FAIL;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return id;
 }
 
 int db_login_by_id(int uid, const char *pass) {

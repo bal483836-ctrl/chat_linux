@@ -356,7 +356,6 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
 <body>
 <div class="window">
   <div class="titlebar">
-    <div class="tb-dots"><i class="r" title="关闭" onclick="winCtl('close')"></i><i class="y" title="最小化" onclick="winCtl('min')"></i><i class="g" title="最大化" onclick="winCtl('max')"></i></div>
     <div class="tb-logo">zoo</div>
     <div class="tb-spacer"></div>
     <div class="net-status off" id="netStatus">连接中…</div>
@@ -413,7 +412,7 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
           <div class="me-av" id="navMeAv" onclick="openProfilePanel(ME)"></div>
           <div class="me-name" id="navMeName">橘座</div>
           <div class="nav-ic on" data-tab="msg" onclick="switchTab('msg')" title="消息">💬<span class="pip show" id="navPip">3</span></div>
-          <div class="nav-ic" data-tab="contacts" onclick="switchTab('contacts')" title="联系人">👥</div>
+          <div class="nav-ic" data-tab="contacts" onclick="switchTab('contacts')" title="联系人">👥<span class="pip" id="reqPip"></span></div>
           <div class="nav-grow"></div>
           <div class="nav-ic" onclick="showPage('settings');closeInfo()" title="设置">⚙️</div>
         </div>
@@ -453,7 +452,6 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
                 <button class="tool-ic" onclick="toggleEmoji(event)" title="表情">😀</button>
                 <button class="tool-ic" onclick="pickImage()" title="发送图片">🖼️</button>
                 <button class="tool-ic" onclick="pickFile()" title="发送文件">📁</button>
-                <button class="tool-ic" onclick="toast('截图（原型）')" title="截图">✂️</button>
               </div>
               <div class="input-row">
                 <div class="input-box"><textarea id="msgInput" rows="1" placeholder="说点什么…  (Enter 发送 / Shift+Enter 换行)" onkeydown="msgKey(event)" oninput="autoGrow(this)"></textarea></div>
@@ -488,6 +486,11 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
             <div class="form-scroll"><div class="form-card">
               <div class="gi-sec" style="padding:6px 12px"><div class="gi-line danger" onclick="logout()"><span class="gi-ic">🚪</span>退出登录</div></div>
             </div></div>
+          </div>
+          <!-- 个人资料(宽) -->
+          <div class="page hidden" id="pageProfile">
+            <div class="form-head"><button class="icon-btn" onclick="showPage('empty')">‹</button><div class="t">个人资料</div></div>
+            <div class="form-scroll"><div class="form-card" id="profilePageBody"></div></div>
           </div>
         </div>
 
@@ -639,8 +642,8 @@ async function doRegister(){const n=document.getElementById('rgName').value.trim
   if(p.length<6){err.textContent='密码至少 6 位';return;}
   if(p!==p2){err.textContent='两次密码不一致';return;}
   if(IS_NATIVE){const ok=await ensureServer();if(!ok){err.textContent='连不上服务器，请检查服务器地址';return;}}
-  if(LIVE&&online){const r=await net.register(n,p);
-    if(r.status!==ZooNet.RS.OK){err.textContent=r.body||'注册失败(昵称可能已被占用)';return;}
+  if(LIVE&&online){const r=await net.register(n,p,e);
+    if(r.status!==ZooNet.RS.OK){err.textContent=r.body||'注册失败';return;}
     myAccount=(r.body||'').trim();const lr=await net.login(myAccount,p);
     ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=r.body;ME.birth=b||ME.birth;
     if(lr.status===ZooNet.RS.OK){const pp=(lr.body||'').split('\n');ME.name=pp[1]||n;}
@@ -663,32 +666,69 @@ function toggleAddMenu(ev){ev.stopPropagation();const menu=document.getElementBy
 function hideAddMenu(){document.getElementById('addMenu').classList.remove('show');}
 
 /* ===== 中间页面切换 ===== */
-function showPage(name){['Empty','Chat','AddFriend','CreateGroup','Settings'].forEach(p=>document.getElementById('page'+p).classList.add('hidden'));
-  const map={empty:'Empty',chat:'Chat',addFriend:'AddFriend',createGroup:'CreateGroup',settings:'Settings'};
+function showPage(name){['Empty','Chat','AddFriend','CreateGroup','Settings','Profile'].forEach(p=>document.getElementById('page'+p).classList.add('hidden'));
+  const map={empty:'Empty',chat:'Chat',addFriend:'AddFriend',createGroup:'CreateGroup',settings:'Settings',profile:'Profile'};
   document.getElementById('page'+map[name]).classList.remove('hidden');
   if(name==='addFriend'){document.getElementById('afInput').value='';document.getElementById('afResult').innerHTML='';setTimeout(()=>document.getElementById('afInput').focus(),50);}
   if(name==='createGroup')buildCreateGroup();
   if(name!=='chat'){currentChat=null;renderChatList();closeInfo();}}
 
 /* ===== 列表 ===== */
+function chatLabel(c){return (c&&c.remark&&c.remark.trim())?c.remark:(c?c.name:'');}
 function renderChatList(filter=''){const box=document.getElementById('chatList');box.innerHTML='';
-  chats.slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)).filter(c=>c.name.includes(filter)).forEach(c=>{
+  chats.slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)).filter(c=>chatLabel(c).includes(filter)).forEach(c=>{
     const el=document.createElement('div');el.className='chat-item'+(c.id===currentChat?' on':'');el.onclick=()=>openChat(c.id);
-    el.innerHTML=`${avHTML(c,'lg')}<div class="ci-mid"><div class="ci-top"><span class="ci-name">${c.pinned?'📌':''}<span class="nt">${esc(c.name)}</span></span><span class="ci-time">${c.time}</span></div><div class="ci-prev">${esc(c.preview)}</div></div>${c.unread?`<div class="badge">${c.unread}</div>`:''}`;
+    el.innerHTML=`${avHTML(c,'lg')}<div class="ci-mid"><div class="ci-top"><span class="ci-name">${c.pinned?'📌':''}<span class="nt">${esc(chatLabel(c))}</span></span><span class="ci-time">${c.time}</span></div><div class="ci-prev">${esc(c.preview)}</div></div>${c.unread?`<div class="badge">${c.unread}</div>`:''}`;
     box.appendChild(el);});}
 function filterChats(v){renderChatList(v.trim());}
-function renderContacts(filter=''){const box=document.getElementById('contactList');const list=friends.filter(f=>f.name.includes(filter));
-  box.innerHTML='<div class="grp-label">我的伙伴 ('+friends.length+')</div>';
-  list.forEach(f=>{const el=document.createElement('div');el.className='contact';el.onclick=()=>openSingleChatByFriend(f); /* 点联系人=进对话 */
-    el.innerHTML=`${avHTML(f,'md')}<div><div class="nm">${esc(f.name)}</div><div class="st">${f.online?'在线':'离线'}</div></div><div class="signal ${f.online?'on':''}"><i></i><i></i><i></i></div>`;box.appendChild(el);});}
+let pendingReqs=[];
+function renderContacts(filter=''){const box=document.getElementById('contactList');let html='';
+  if(pendingReqs.length){html+='<div class="grp-label">新的朋友 ('+pendingReqs.length+')</div>';
+    pendingReqs.forEach(r=>{const k=colorAnimal(r.color);const u={color:'c-'+k,animal:k,emoji:'🙋'};
+      html+=`<div class="contact" style="cursor:default">${avHTML(u,'md')}<div style="flex:1;min-width:0"><div class="nm">${esc(r.nick)}</div><div class="st">${esc(r.hello||'请求加为好友')}</div></div>`+
+        `<button class="pill green sm" onclick="acceptReq(${r.reqid})">同意</button>`+
+        `<button class="pill cream sm" style="margin-left:6px" onclick="rejectReq(${r.reqid})">拒绝</button></div>`;});}
+  const list=friends.filter(f=>f.name.includes(filter));
+  html+='<div class="grp-label">我的伙伴 ('+friends.length+')</div>';
+  list.forEach(f=>{html+=`<div class="contact" onclick="showContactProfile(userById('${f.id}'))">${avHTML(f,'md')}`+
+    `<div style="flex:1;min-width:0"><div class="nm">${esc(f.name)}</div><div class="st">${f.online?'在线':'离线'}</div></div>`+
+    `<div class="signal ${f.online?'on':''}"><i></i><i></i><i></i></div></div>`;});
+  box.innerHTML=html;}
 function filterContacts(v){renderContacts(v.trim());}
+function updateReqBadge(){const p=document.getElementById('reqPip');if(!p)return;if(pendingReqs.length){p.textContent=pendingReqs.length;p.classList.add('show');}else p.classList.remove('show');}
+function acceptReq(reqid){if(LIVE&&online&&net)net.friendReqReply(reqid,true);pendingReqs=pendingReqs.filter(r=>r.reqid!==reqid);renderContacts();updateReqBadge();toast('已同意 ✅');}
+function rejectReq(reqid){if(LIVE&&online&&net)net.friendReqReply(reqid,false);pendingReqs=pendingReqs.filter(r=>r.reqid!==reqid);renderContacts();updateReqBadge();toast('已拒绝');}
+function addPendingReq(m){const reqid=m.status;if(pendingReqs.some(r=>r.reqid===reqid))return;
+  pendingReqs.unshift({reqid,account:m.from_name,nick:m.from_nick||m.from_name,color:0,hello:m.body});
+  renderContacts();updateReqBadge();toast('收到好友申请：'+(m.from_nick||m.from_name)+' 🙋');}
+function setPendingReqs(body){pendingReqs=ZooNet.parseFreqList(body);renderContacts();updateReqBadge();}
+/* 联系人点击 -> 中间宽资料页 */
+function showContactProfile(u){if(!u)return;currentChat=null;showPage('profile');renderProfilePage(u);}
+let profilePageUser=null;
+function renderProfilePage(u){profilePageUser=u;const isMe=u.id==='me';const box=document.getElementById('profilePageBody');if(!box)return;
+  if(LIVE&&online&&!isMe){if(liveProfiles[u.id])u.birth=liveProfiles[u.id].birth;else net.profileGet(u.id);}
+  box.innerHTML=`
+    <div style="display:flex;flex-direction:column;align-items:center;padding:18px 0 8px">
+      ${avHTML(u,'xl')}
+      <div style="font-size:23px;font-weight:900;margin-top:14px">${esc(u.name)}</div>
+      <div style="color:var(--ink-soft);font-size:13px;margin-top:4px">zoo 号: ${esc(String(u.zoo||u.id||'—'))}</div>
+    </div>
+    <div class="pf-fields">
+      <label>账号 (zoo 号)</label><div class="pf-val">${esc(String(u.zoo||u.id||'—'))}</div>
+      <label>出生日期</label><div class="pf-val">${u.birth||'未填写'}</div>
+    </div>
+    <div style="display:flex;gap:10px;margin-top:18px">
+      ${isMe?`<button class="pill yellow" style="flex:1" onclick="openProfilePanel(ME);profileEdit=true;renderProfile(ME)">✏️ 编辑资料</button>`
+            :`<button class="pill green" style="flex:1" onclick="msgContact('${u.id}')">💬 发消息</button>`}
+    </div>`;}
+function msgContact(id){const f=userById(id);if(f&&f.id!=='me')openSingleChatByFriend(f);}
 function openSingleChatByFriend(f){let c=chats.find(x=>x.type==='single'&&x.friendId===f.id);
   if(!c){c=Object.assign(mk('c_'+f.id,f.name,f.animal),{type:'single',sub:f.online?'在线':'离线',time:'刚刚',preview:'',unread:0,friendId:f.id});chats.push(c);conversations[c.id]=[];}
   switchTab('msg');openChat(c.id);}
 
 /* ===== 会话 ===== */
 function openChat(id){currentChat=id;const c=chats.find(x=>x.id===id);if(!c)return;showPage('chat');currentChat=id;
-  document.getElementById('chatTitle').textContent=c.name;document.getElementById('chatSub').textContent=c.sub;
+  document.getElementById('chatTitle').textContent=chatLabel(c);document.getElementById('chatSub').textContent=c.sub;
   document.getElementById('headAv').innerHTML=avHTML(c,'md');
   c.unread=0;renderChatList();updatePip();renderMessages();liveOpen(c);closeInfo();closeEmoji();}
 function liveOpen(c){if(!(LIVE&&online))return;conversations[c.id]=[];renderMessages();
@@ -775,7 +815,7 @@ function renderInfo(){const c=chats.find(x=>x.id===currentChat);if(!c){closeInfo
       ? `<div class="inline-edit"><textarea id="noticeEdit" rows="3">${esc(groupNotice[c.id]||'')}</textarea><div class="ie-foot"><button class="pill cream sm" onclick="editingNotice=false;renderInfo()">取消</button><button class="pill green sm" onclick="saveNotice()">保存</button></div></div>`
       : `<div class="notice-text">${esc(groupNotice[c.id]||'暂无群公告')}</div>`;
     inner.innerHTML=panelHead('群聊信息')+`<div class="info-body">
-      <div class="gi-hero">${avHTML(c,'xl')}<div class="nm">${esc(c.name)}</div></div>
+      <div class="gi-hero"><div style="position:relative;cursor:pointer" onclick="pickAvatar('${c.id}')" title="点击更换群头像">${avHTML(c,'xl')}<div class="av-cam">📷</div></div><div class="nm">${esc(c.name)}</div></div>
       <div class="gi-sec"><div class="h"><b>群公告</b><span class="e" onclick="editingNotice=true;renderInfo()">✏️</span></div>${noticeBlock}</div>
       <div class="gi-sec"><div class="h"><b>群成员 (${ids.length})</b></div><div class="members">${mem}</div></div>
       <div class="gi-sec" style="padding:6px 12px">
@@ -803,7 +843,8 @@ function renderInfo(){const c=chats.find(x=>x.id===currentChat);if(!c){closeInfo
 function saveNotice(){const c=chats.find(x=>x.id===currentChat);const v=document.getElementById('noticeEdit').value.trim();if(v)groupNotice[c.id]=v;editingNotice=false;
   if(LIVE&&online)net.groupNotice(c.gid,v);renderInfo();toast('群公告已更新 📢');}
 function saveRemark(){const c=chats.find(x=>x.id===currentChat);c.remark=document.getElementById('remarkEdit').value.trim();editingRemark=false;
-  if(LIVE&&online)net.friendRemark(c.friendId,c.remark);renderInfo();toast('备注已保存 ✏️');}
+  if(LIVE&&online)net.friendRemark(c.friendId,c.remark);
+  renderChatList();const t=document.getElementById('chatTitle');if(t)t.textContent=chatLabel(c);renderInfo();toast('备注已保存 ✏️');}
 function togglePin(){const c=chats.find(x=>x.id===currentChat);c.pinned=!c.pinned;renderChatList();renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}
 function clearChat(){conversations[currentChat]=[];renderMessages();toast('聊天记录已清空 🧹');}
 function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);renderChatList();toast('已退出群聊');}
@@ -816,7 +857,7 @@ let profileEdit=false;
 function renderProfile(u){const isMe=u.id==='me';const inner=document.getElementById('infoInner');
   if(LIVE&&online&&!isMe){if(liveProfiles[u.id])u.birth=liveProfiles[u.id].birth;else net.profileGet(u.id);}
   const hero=`<div style="display:flex;flex-direction:column;align-items:center;margin:6px 0 4px;">
-      <div style="position:relative;${isMe?'cursor:pointer':''}" ${isMe?'onclick="pickAvatar()" title="点击更换头像"':''}>
+      <div style="position:relative;${isMe?'cursor:pointer':''}" ${isMe?`onclick="pickAvatar('me')" title="点击更换头像"`:''}>
         ${avHTML(u,'xl')}${isMe?'<div class="av-cam">📷</div>':''}
       </div>
       <div style="font-size:19px;font-weight:900;margin-top:12px;">${esc(u.name)}</div>
@@ -852,11 +893,12 @@ function confirmInvite(){if(!inviteSel.size){toast('先选择伙伴吧~');return
 
 /* --- 查找 / 文件 QQ 式(页内) --- */
 let searchTab='chat',searchKey='';
+function setSearchTab(t){searchTab=t;document.querySelectorAll('#infoInner .seg .sg').forEach((el,i)=>el.classList.toggle('on',['chat','image','file','date'][i]===t));renderSearchBody();}
 function renderSearchPanel(){const inner=document.getElementById('infoInner');
   const tabs=[['chat','聊天'],['image','图片'],['file','文件'],['date','日期']];
   inner.innerHTML=panelHead('查找 / 文件')+`<div class="info-body">
     <div class="search" style="margin:0 0 10px"><span>🔍</span><input id="seKey" placeholder="搜索关键字" value="${esc(searchKey)}" oninput="searchKey=this.value;renderSearchBody()"></div>
-    <div class="seg">${tabs.map(t=>`<div class="sg ${searchTab===t[0]?'on':''}" onclick="searchTab='${t[0]}';renderSearchBody()">${t[1]}</div>`).join('')}</div>
+    <div class="seg">${tabs.map(t=>`<div class="sg ${searchTab===t[0]?'on':''}" onclick="setSearchTab('${t[0]}')">${t[1]}</div>`).join('')}</div>
     <div id="seBody"></div></div>`;
   setTimeout(renderSearchBody,0);}
 function renderSearchBody(){const box=document.getElementById('seBody');if(!box)return;const list=(conversations[currentChat]||[]).filter(m=>!m.recalled);const k=searchKey.trim();
@@ -925,8 +967,8 @@ function winCtl(act){
 }
 
 /* ===== 头像: 选本地图片 + 圆形裁剪 ===== */
-let cropState=null;
-function pickAvatar(){const inp=document.getElementById('avatarInput');inp.value='';
+let cropState=null,cropTarget='me';
+function pickAvatar(target){cropTarget=target||'me';const inp=document.getElementById('avatarInput');inp.value='';
   inp.onchange=()=>{const f=inp.files[0];if(!f)return;const url=URL.createObjectURL(f);openCrop(url);};inp.click();}
 function openCrop(url){const img=document.getElementById('cropImg');
   img.onload=()=>{const S=240;const base=Math.max(S/img.naturalWidth,S/img.naturalHeight);
@@ -943,9 +985,12 @@ function closeCrop(){document.getElementById('cropMask').classList.remove('show'
 function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=document.createElement('canvas');cv.width=OUT;cv.height=OUT;
   const ctx=cv.getContext('2d');const r=OUT/s.S;
   ctx.drawImage(s.img,s.x*r,s.y*r,s.nw*s.base*s.zoom*r,s.nh*s.base*s.zoom*r);
-  ME.customImg=cv.toDataURL('image/png');
-  closeCrop();refreshMe();renderChatList();renderContacts();if(panelStack.length)renderPanel();toast('头像已更新 ✅');
-  if(LIVE&&online&&net&&net.avatarUpload){try{net.avatarUpload(ME.customImg);}catch(e){}}}
+  const data=cv.toDataURL('image/png');
+  if(cropTarget==='me'){ME.customImg=data;refreshMe();}
+  else{const c=chats.find(x=>x.id===cropTarget);if(c)c.customImg=data;}
+  closeCrop();renderChatList();renderContacts();
+  if(currentChat){const cc=chats.find(x=>x.id===currentChat);if(cc&&document.getElementById('headAv'))document.getElementById('headAv').innerHTML=avHTML(cc,'md');}
+  if(panelStack.length)renderPanel();toast('头像已更新 ✅');}
 (function bindCropDrag(){const stage=document.getElementById('cropStage');if(!stage)return;
   let drag=false,px=0,py=0;
   const down=e=>{if(!cropState)return;drag=true;const p=e.touches?e.touches[0]:e;px=p.clientX;py=p.clientY;};
@@ -1001,16 +1046,20 @@ function bindLive(){if(liveBound)return;liveBound=true;const T=ZooNet.T;
     if(currentChat===cid&&panelStack.length&&curPanel().view==='info')renderPanel();});
   net.on(T.PROFILE_DATA,m=>{const p=ZooNet.parseProfile(m.body);liveProfiles[m.from_name]=p;
     const cp=panelStack.length?curPanel():null;
-    if(cp&&cp.view==='profile'&&cp.data.user&&cp.data.user.id===m.from_name){cp.data.user.birth=p.birth;cp.data.user.name=cp.data.user.name||p.nick;renderPanel();}});
+    if(cp&&cp.view==='profile'&&cp.data.user&&cp.data.user.id===m.from_name){cp.data.user.birth=p.birth;cp.data.user.name=cp.data.user.name||p.nick;renderPanel();}
+    if(profilePageUser&&profilePageUser.id===m.from_name&&!document.getElementById('pageProfile').classList.contains('hidden')){profilePageUser.birth=p.birth;renderProfilePage(profilePageUser);}});
+  net.on(T.FRIEND_REQ_NOTIFY,m=>addPendingReq(m));
+  net.on(T.FRIEND_REQ_LIST,m=>setPendingReqs(m.body));
   net.on('close',()=>{online=false;liveStatus('连接已断开',false);});}
-function liveResetData(){friends.length=0;strangers.length=0;chats.length=0;Object.keys(conversations).forEach(k=>delete conversations[k]);}
+function liveResetData(){friends.length=0;strangers.length=0;chats.length=0;pendingReqs=[];updateReqBadge();Object.keys(conversations).forEach(k=>delete conversations[k]);}
 function ensureUser(account,nick,color){if(account===myAccount)return ME;
   let u=friends.find(f=>f.id===account)||strangers.find(s=>s.id===account);
   if(!u){u=mk(account,nick||account,colorAnimal(color),{zoo:account,online:true});strangers.push(u);}else if(nick&&!u.name)u.name=nick;return u;}
 function applyFriendList(body){ZooNet.parseFriendList(body).forEach(f=>{if(f.black)return;
   let u=friends.find(x=>x.id===f.account);
-  if(!u){u=mk(f.account,f.nick,colorAnimal(f.color),{zoo:f.account,online:f.online});friends.push(u);}else{u.name=f.nick;u.online=f.online;}});
-  renderContacts();}
+  if(!u){u=mk(f.account,f.nick,colorAnimal(f.color),{zoo:f.account,online:f.online});friends.push(u);}else{u.name=f.nick;u.online=f.online;}
+  const c=chats.find(x=>x.type==='single'&&x.friendId===f.account);if(c&&f.remark)c.remark=f.remark;});
+  renderContacts();renderChatList();}
 function applyGroupList(body){ZooNet.parseGroupList(body).forEach(g=>{let c=chats.find(x=>x.gid===g.gid);
   if(!c){c=Object.assign(mk('g'+g.gid,g.name,'cat'),{type:'group',gid:g.gid,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}else c.name=g.name;});
   renderChatList();}

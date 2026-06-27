@@ -171,11 +171,24 @@ void *client_thread(void *arg) {
     while (recv_msg(fd, &m) == 0) {
         switch (m.type) {
         case MSG_REGISTER: {
-            /* body = "nickname\npassword" */
-            char nick[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
-            if (split_userpass(m.body, nick, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
-            int id = db_register(nick, p);
-            if (id < 0) { resp(fd, RS_FAIL, "注册失败"); break; }
+            /* body = "nickname\npassword[\nemail]" */
+            char nick[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0}, email[64] = {0};
+            const char *nl1 = strchr(m.body, '\n');
+            if (!nl1) { resp(fd, RS_FAIL, "bad format"); break; }
+            int nlen = nl1 - m.body; if (nlen <= 0 || nlen >= MAX_NAME_LEN) { resp(fd, RS_FAIL, "bad format"); break; }
+            memcpy(nick, m.body, nlen); nick[nlen] = 0;
+            const char *l2 = nl1 + 1;
+            const char *nl2 = strchr(l2, '\n');
+            if (nl2) {
+                int plen = nl2 - l2; if (plen >= MAX_PASS_LEN) plen = MAX_PASS_LEN - 1;
+                memcpy(p, l2, plen); p[plen] = 0;
+                strncpy(email, nl2 + 1, sizeof(email) - 1);
+            } else {
+                strncpy(p, l2, MAX_PASS_LEN - 1);
+            }
+            if (email[0] && db_email_exists(email)) { resp(fd, RS_USER_EXIST, "该邮箱已注册"); break; }
+            int id = db_register(nick, p, email);
+            if (id < 0) { resp(fd, RS_FAIL, "注册失败(邮箱可能已被使用)"); break; }
             /* === 自动加 mock 好友 ===
              * 把 sql/init.sql 里预置的"小助手 / 新手指南"两位补成新用户的
              * 初始好友, 让登录后好友列表不至于空荡荡, 也方便答辩演示头像/
@@ -191,13 +204,19 @@ void *client_thread(void *arg) {
             break;
         }
         case MSG_LOGIN: {
-            /* body = "account\npassword" */
-            char acc[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
-            if (split_userpass(m.body, acc, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
-            int uid = atoi(acc) - ACCOUNT_BASE;
-            if (uid <= 0) { resp(fd, RS_AUTH_FAIL, "账号格式错误"); break; }
-            int id = db_login_by_id(uid, p);
+            /* body = "account或email\npassword" */
+            char first[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
+            if (split_userpass(m.body, first, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
+            int id;
+            if (strchr(first, '@')) {          /* 邮箱登录 */
+                id = db_login_by_email(first, p);
+            } else {                            /* 账号登录 */
+                int uid = atoi(first) - ACCOUNT_BASE;
+                if (uid <= 0) { resp(fd, RS_AUTH_FAIL, "账号格式错误"); break; }
+                id = db_login_by_id(uid, p);
+            }
             if (id < 0) { resp(fd, RS_AUTH_FAIL, "账号或密码错误"); break; }
+            char acc[MAX_NAME_LEN]; snprintf(acc, sizeof(acc), "%d", id + ACCOUNT_BASE);
             sess.uid = id;
             strncpy(sess.account, acc, MAX_NAME_LEN - 1);
             db_get_nick(id, sess.nick, sizeof(sess.nick));
