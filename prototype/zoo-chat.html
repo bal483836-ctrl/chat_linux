@@ -821,7 +821,7 @@ function renderInfo(){const c=chats.find(x=>x.id===currentChat);if(!c){closeInfo
       <div class="gi-sec" style="padding:6px 12px">
         <div class="gi-line" onclick="openPanel('search')"><span class="gi-ic">🔍</span>查找聊天记录 / 文件<span class="gi-arr">›</span></div>
         <div class="gi-line" onclick="togglePin()"><span class="gi-ic">📌</span>${c.pinned?'取消置顶':'置顶聊天'}<span class="gi-arr">${c.pinned?'已置顶':''}</span></div>
-        <div class="gi-line" onclick="toast('消息免打扰已开启 🔕')"><span class="gi-ic">🔕</span>消息免打扰<span class="gi-arr">›</span></div>
+        <div class="gi-line" onclick="toggleMute()"><span class="gi-ic">🔕</span>消息免打扰<span class="gi-arr">${c.muted?'已开启':'›'}</span></div>
         <div class="gi-line" onclick="clearChat()"><span class="gi-ic">🧹</span>清空聊天记录<span class="gi-arr">›</span></div>
         <div class="gi-line danger" onclick="leaveGroup()"><span class="gi-ic">🚪</span>退出群聊</div></div></div>`;
   }else{const f=userById(c.friendId);
@@ -835,7 +835,7 @@ function renderInfo(){const c=chats.find(x=>x.id===currentChat);if(!c){closeInfo
         ${remarkBlock}
         <div class="gi-line" onclick="openPanel('search')"><span class="gi-ic">🔍</span>查找聊天记录 / 文件<span class="gi-arr">›</span></div>
         <div class="gi-line" onclick="togglePin()"><span class="gi-ic">📌</span>${c.pinned?'取消置顶':'置顶聊天'}<span class="gi-arr">${c.pinned?'已置顶':''}</span></div>
-        <div class="gi-line" onclick="toast('消息免打扰已开启 🔕')"><span class="gi-ic">🔕</span>消息免打扰<span class="gi-arr">›</span></div></div>
+        <div class="gi-line" onclick="toggleMute()"><span class="gi-ic">🔕</span>消息免打扰<span class="gi-arr">${c.muted?'已开启':'›'}</span></div></div>
       <div class="gi-sec" style="padding:6px 12px">
         <div class="gi-line danger" onclick="blockFriend('${c.friendId}')"><span class="gi-ic">🚫</span>加入黑名单</div>
         <div class="gi-line danger" onclick="deleteFriend('${c.friendId}')"><span class="gi-ic">🗑️</span>删除好友</div></div></div>`;}
@@ -846,6 +846,7 @@ function saveRemark(){const c=chats.find(x=>x.id===currentChat);c.remark=documen
   if(LIVE&&online)net.friendRemark(c.friendId,c.remark);
   renderChatList();const t=document.getElementById('chatTitle');if(t)t.textContent=chatLabel(c);renderInfo();toast('备注已保存 ✏️');}
 function togglePin(){const c=chats.find(x=>x.id===currentChat);c.pinned=!c.pinned;renderChatList();renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}
+function toggleMute(){const c=chats.find(x=>x.id===currentChat);if(!c)return;c.muted=!c.muted;renderInfo();toast(c.muted?'消息免打扰已开启 🔕':'已取消免打扰 🔔');}
 function clearChat(){conversations[currentChat]=[];renderMessages();toast('聊天记录已清空 🧹');}
 function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);renderChatList();toast('已退出群聊');}
 function blockFriend(fid){if(LIVE&&online)net.blackAdd(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已加入黑名单 🚫');}
@@ -1080,7 +1081,7 @@ function incomingMsg(kind,m){ensureUser(m.from_name,m.from_nick,0);let c;
   const msg={id:Date.now()+Math.random(),from,type:'text',text:m.body,time:isNaN(t)?new Date():t};
   (conversations[c.id]=conversations[c.id]||[]).push(msg);
   c.preview=previewOf(msg);c.time=fmtTime(msg.time,'hm');
-  if(currentChat!==c.id&&from!=='me')c.unread=(c.unread||0)+1;
+  if(currentChat!==c.id&&from!=='me'&&!c.muted)c.unread=(c.unread||0)+1;
   renderChatList();updatePip();if(currentChat===c.id)renderMessages();}
 function setOnlineState(account,on){const f=friends.find(x=>x.id===account);if(f)f.online=on;
   const c=chats.find(x=>x.friendId===account);if(c){c.sub=on?'在线':'离线';if(currentChat===c.id)document.getElementById('chatSub').textContent=c.sub;}renderContacts();}
