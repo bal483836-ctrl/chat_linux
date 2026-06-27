@@ -1,5 +1,5 @@
 /* ============================================================
- * zoo-net.js  —  浏览器端网络层 (连接 bridge.js -> C 聊天服务器)
+ * zoo-net.js  —  桌面端网络层 (经 Electron 主进程 TCP 直连 C 聊天服务器)
  *
  *  - 通过 WebSocket 连到 bridge, 收发 JSON; bridge 负责与 4240B
  *    Message 结构互转。
@@ -38,39 +38,30 @@ class ZooNet {
   _emit(type, msg){ (this.handlers[type]||[]).forEach(fn=>{ try{ fn(msg); }catch(e){ console.error(e); } });
                     (this.handlers['*']||[]).forEach(fn=>{ try{ fn(msg); }catch(e){} }); }
 
-  /* 统一分发: 桥接事件 / RESPONSE 应答队列 / 普通推送 */
+  /* 统一分发: 连接事件 / RESPONSE 应答队列 / 普通推送 */
   _dispatch(m){
-    if (m._ev === 'bridge'){ if (this._bridge) this._bridge(m); return; }
+    if (m._ev === 'bridge'){ if (this._onconn) this._onconn(m); return; }
     if (m.type === T.RESPONSE && this.respQ.length){ this.respQ.shift()(m); return; }
     this._emit(m.type, m);
   }
 
-  /* 两种传输:
-   *   - 桌面版(Electron): window.zooNative(主进程直连 C 服务器 TCP)
-   *   - 浏览器版: WebSocket -> bridge.js -> TCP */
+  /* 桌面版(Electron): 主进程(window.zooNative)直连 C 服务器 TCP */
   connect(host){
     const native = (typeof window !== 'undefined' && window.zooNative) ? window.zooNative : null;
     return new Promise((resolve, reject)=>{
+      if (!native){ return reject(new Error('no native bridge (zooNative)')); }
       let settled = false;
-      this._bridge = (m)=>{
+      this._onconn = (m)=>{
         if (m.ok){ this.connected = true; if(!settled){settled=true; resolve(this);} }
-        else { this._emit('error', m); if(!settled){settled=true; reject(new Error(m.msg));} }
+        else { this._emit('error', m); this.connected = false; this._emit('close', {}); if(!settled){settled=true; reject(new Error(m.msg));} }
       };
-      if (native){
-        this.native = native;
-        if (!this._nativeBound){ native.onMsg(m=>this._dispatch(m)); this._nativeBound = true; }
-        Promise.resolve(native.connect(host)).catch(e=>{ if(!settled){settled=true; reject(e);} });
-      } else {
-        try { this.ws = new WebSocket(this.url); } catch(e){ return reject(e); }
-        this.ws.onmessage = (ev)=>{ let m; try { m = JSON.parse(ev.data); } catch(e){ return; } this._dispatch(m); };
-        this.ws.onerror = (e)=>{ this._emit('error', e); if(!settled){settled=true; reject(e);} };
-        this.ws.onclose = ()=>{ this.connected = false; this._emit('close', {}); };
-      }
+      this.native = native;
+      if (!this._nativeBound){ native.onMsg(m=>this._dispatch(m)); this._nativeBound = true; }
+      Promise.resolve(native.connect(host)).catch(e=>{ if(!settled){settled=true; reject(e);} });
       setTimeout(()=>{ if(!settled){settled=true; reject(new Error('connect timeout')); } }, 6000);
     });
   }
-  send(obj){ if (this.native){ this.native.send(obj); return; }
-             if (this.ws && this.ws.readyState === 1) this.ws.send(JSON.stringify(obj)); }
+  send(obj){ if (this.native) this.native.send(obj); }
   _req(obj){ return new Promise(res=>{ this.respQ.push(res); this.send(obj); }); }
 
   /* ---- 账号 ---- */

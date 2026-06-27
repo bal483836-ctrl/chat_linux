@@ -1024,28 +1024,28 @@ function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=docum
 })();
 
 /* ============================================================
-   实时后端连接层 (bridge.js -> chat_server)
+   实时后端连接层 (Electron 主进程 TCP -> chat_server)
    - 经 http(s) 由 bridge 提供页面时启用 LIVE；file:// 双击则为演示模式
    ============================================================ */
-const LIVE=(location.protocol==='http:'||location.protocol==='https:'||(typeof window!=='undefined'&&!!window.zooNative));
+const IS_NATIVE=(typeof window!=='undefined'&&!!window.zooNative);
+const LIVE=IS_NATIVE;                       /* 仅桌面版(Electron)直连服务器; 非桌面=本地演示 */
 let net=null,online=false,myAccount=null,liveProfiles={};
+let curHost=null,liveBound=false;
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
 function liveStatus(txt,ok){const el=document.getElementById('netStatus');if(el){el.textContent=txt;el.className='net-status '+(ok?'on':'off');}}
-const IS_NATIVE=(typeof window!=='undefined'&&!!window.zooNative);
-let curHost=null,liveBound=false;
 function savedHost(){try{return localStorage.getItem('zoo_host')||'127.0.0.1';}catch(e){return '127.0.0.1';}}
 async function initLive(){
-  if(IS_NATIVE){document.body.classList.add('native');
-    const f=document.getElementById('srvHostField');if(f)f.style.display='';
-    const h=document.getElementById('srvHost');if(h)h.value=savedHost();}
-  if(!LIVE||typeof ZooNet==='undefined'){liveStatus('演示模式',false);return;}
-  net = IS_NATIVE ? new ZooNet(null) : new ZooNet((location.protocol==='https:'?'wss://':'ws://')+location.host+'/');
+  if(!IS_NATIVE||typeof ZooNet==='undefined'){liveStatus('演示模式',false);return;}
+  document.body.classList.add('native');
+  const f=document.getElementById('srvHostField');if(f)f.style.display='';
+  const h=document.getElementById('srvHost');if(h)h.value=savedHost();
+  net=new ZooNet(null);
   bindLive();
-  await connectLive(IS_NATIVE?savedHost():null);
+  await connectLive(savedHost());
 }
 async function connectLive(host){
-  try{await net.connect(host);online=true;curHost=host;liveStatus(IS_NATIVE?'桌面版 · 已连服务器 ✅':'已连服务器 ✅',true);return true;}
-  catch(e){online=false;liveStatus(IS_NATIVE?'未连服务器(检查地址)':'演示模式(未连服务器)',false);return false;}
+  try{await net.connect(host);online=true;curHost=host;liveStatus('桌面版 · 已连服务器 ✅',true);return true;}
+  catch(e){online=false;liveStatus('未连服务器(检查地址)',false);return false;}
 }
 /* 桌面版: 登录/注册前确保已连到用户填写的服务器地址 */
 async function ensureServer(){

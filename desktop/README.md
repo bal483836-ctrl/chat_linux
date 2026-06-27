@@ -66,9 +66,6 @@ npm run dist:linux    # Linux: 生成 AppImage(可在 OpenEuler 22.03 直接运�
 
 > AppImage 自带 Electron 运行时，无需在 OpenEuler 上装 Node；只要能连到 chat_server 即可使用。
 
-## 与浏览器版的关系
-- **同一套界面代码**。`zoo-chat.html` 自动判断环境:
-  - 检测到 `window.zooNative` → 桌面版,走 Electron 主进程 TCP 直连;
-  - 否则在浏览器里 → 走 `prototype/bridge.js` 的 WebSocket;
-  - 直接 `file://` 双击且无后端 → 演示模式(本地假数据)。
-- 所以浏览器预览和桌面应用共用一份 UI,改一处两边都生效。
+## 说明
+- 界面与资源在 `../prototype/`，由本应用加载（开发模式相对路径，打包时作为 extraResources）。
+- 直接用浏览器打开 `prototype/zoo-chat.html` 只是本地演示(假数据)，真实收发请用本桌面应用。

@@ -3,7 +3,7 @@
  * 覆盖: 注册/登录/错误密码/好友申请/私聊/历史(to_name)/离线消息/备注/
  *       建群/邀请/群成员/群聊/群公告/资料/搜索/上下线通知/拉黑/删好友 */
 const net=require('net');
-const {encodeMsg,decodeMsg,MSG_SIZE}=require('./bridge.js');
+const {encodeMsg,decodeMsg,MSG_SIZE}=require('../desktop/msgcodec');
 const T={REGISTER:1,LOGIN:2,LOGOUT:3,RESPONSE:4,PRIVATE_CHAT:10,GROUP_CHAT:11,
   FRIEND_DEL:21,FRIEND_LIST:22,BLACK_ADD:23,FRIEND_REQ:25,FRIEND_REQ_NOTIFY:26,FRIEND_REQ_REPLY:27,
   GROUP_CREATE:30,GROUP_LIST:32,GROUP_MEMBERS:33,GROUP_INVITE:39,HISTORY_PRIV:40,HISTORY_GROUP:41,

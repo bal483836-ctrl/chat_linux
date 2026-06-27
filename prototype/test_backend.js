@@ -2,7 +2,7 @@
  * 运行:  node prototype/test_backend.js
  * 覆盖: 注册/登录/资料/好友备注/建群/邀请入群/群成员/群公告 */
 const net=require('net');
-const {encodeMsg,decodeMsg,MSG_SIZE}=require('./bridge.js');
+const {encodeMsg,decodeMsg,MSG_SIZE}=require('../desktop/msgcodec');
 const T={REGISTER:1,LOGIN:2,RESPONSE:4,FRIEND_LIST:22,FRIEND_REMARK:29,GROUP_CREATE:30,GROUP_LIST:32,
   GROUP_MEMBERS:33,GROUP_INVITE:39,GROUP_NOTICE:100,PROFILE_GET:101,PROFILE_SET:102,PROFILE_DATA:103};
 let sock,buf=Buffer.alloc(0),inbox=[],waiters=[];
