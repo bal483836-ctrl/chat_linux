@@ -515,6 +515,11 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
     <div class="pm-item" onclick="hideAddMenu();showPage('addFriend')">🙋 加好友 / 群</div>
     <div class="pm-item" onclick="hideAddMenu();showPage('createGroup')">👥 创建群聊</div>
   </div>
+  <!-- 消息列表右键菜单 -->
+  <div class="popmenu" id="chatCtxMenu">
+    <div class="pm-item cc-pin" onclick="ccPin()">📌 置顶</div>
+    <div class="pm-item" onclick="ccRemove()">🗑️ 从列表移除</div>
+  </div>
 
   <!-- 头像本地选图 + 裁剪 -->
   <input type="file" id="avatarInput" accept="image/*" style="display:none">
@@ -676,8 +681,9 @@ function showPage(name){['Empty','Chat','AddFriend','CreateGroup','Settings','Pr
 /* ===== 列表 ===== */
 function chatLabel(c){return (c&&c.remark&&c.remark.trim())?c.remark:(c?c.name:'');}
 function renderChatList(filter=''){const box=document.getElementById('chatList');box.innerHTML='';
-  chats.slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)).filter(c=>chatLabel(c).includes(filter)).forEach(c=>{
+  chats.slice().sort((a,b)=>(b.pinned?1:0)-(a.pinned?1:0)).filter(c=>!c.hidden&&chatLabel(c).includes(filter)).forEach(c=>{
     const el=document.createElement('div');el.className='chat-item'+(c.id===currentChat?' on':'');el.onclick=()=>openChat(c.id);
+    el.oncontextmenu=(e)=>showChatCtx(e,c.id);
     el.innerHTML=`${avHTML(c,'lg')}<div class="ci-mid"><div class="ci-top"><span class="ci-name">${c.pinned?'📌':''}<span class="nt">${esc(chatLabel(c))}</span></span><span class="ci-time">${c.time}</span></div><div class="ci-prev">${esc(c.preview)}</div></div>${c.unread?`<div class="badge">${c.unread}</div>`:''}`;
     box.appendChild(el);});}
 function filterChats(v){renderChatList(v.trim());}
@@ -693,6 +699,10 @@ function renderContacts(filter=''){const box=document.getElementById('contactLis
   list.forEach(f=>{html+=`<div class="contact" onclick="showContactProfile(userById('${f.id}'))">${avHTML(f,'md')}`+
     `<div style="flex:1;min-width:0"><div class="nm">${esc(f.name)}</div><div class="st">${f.online?'在线':'离线'}</div></div>`+
     `<div class="signal ${f.online?'on':''}"><i></i><i></i><i></i></div></div>`;});
+  const groups=chats.filter(c=>c.type==='group'&&chatLabel(c).includes(filter));
+  if(groups.length){html+='<div class="grp-label">我的群聊 ('+groups.length+')</div>';
+    groups.forEach(g=>{html+=`<div class="contact" onclick="switchTab('msg');openChat('${g.id}')">${avHTML(g,'md')}`+
+      `<div style="flex:1;min-width:0"><div class="nm">${esc(g.name)}</div><div class="st">${esc(g.sub||'群聊')}</div></div></div>`;});}
   box.innerHTML=html;}
 function filterContacts(v){renderContacts(v.trim());}
 function updateReqBadge(){const p=document.getElementById('reqPip');if(!p)return;if(pendingReqs.length){p.textContent=pendingReqs.length;p.classList.add('show');}else p.classList.remove('show');}
@@ -727,7 +737,7 @@ function openSingleChatByFriend(f){let c=chats.find(x=>x.type==='single'&&x.frie
   switchTab('msg');openChat(c.id);}
 
 /* ===== 会话 ===== */
-function openChat(id){currentChat=id;const c=chats.find(x=>x.id===id);if(!c)return;showPage('chat');currentChat=id;
+function openChat(id){currentChat=id;const c=chats.find(x=>x.id===id);if(!c)return;c.hidden=false;showPage('chat');currentChat=id;
   document.getElementById('chatTitle').textContent=chatLabel(c);document.getElementById('chatSub').textContent=c.sub;
   document.getElementById('headAv').innerHTML=avHTML(c,'md');
   c.unread=0;renderChatList();updatePip();renderMessages();liveOpen(c);closeInfo();closeEmoji();}
@@ -847,6 +857,16 @@ function saveRemark(){const c=chats.find(x=>x.id===currentChat);c.remark=documen
   renderChatList();const t=document.getElementById('chatTitle');if(t)t.textContent=chatLabel(c);renderInfo();toast('备注已保存 ✏️');}
 function togglePin(){const c=chats.find(x=>x.id===currentChat);c.pinned=!c.pinned;renderChatList();renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}
 function toggleMute(){const c=chats.find(x=>x.id===currentChat);if(!c)return;c.muted=!c.muted;renderInfo();toast(c.muted?'消息免打扰已开启 🔕':'已取消免打扰 🔔');}
+/* 消息列表右键菜单 */
+let chatCtxId=null;
+function showChatCtx(e,id){e.preventDefault();chatCtxId=id;const c=chats.find(x=>x.id===id);
+  const m=document.getElementById('chatCtxMenu');m.querySelector('.cc-pin').textContent=(c&&c.pinned)?'📌 取消置顶':'📌 置顶';
+  const w=document.querySelector('.window').getBoundingClientRect();const mw=150,mh=96;
+  let px=Math.min(e.clientX-w.left,w.width-mw-8),py=Math.min(e.clientY-w.top,w.height-mh-8);
+  m.style.left=Math.max(8,px)+'px';m.style.top=Math.max(8,py)+'px';m.classList.add('show');}
+function hideChatCtx(){const m=document.getElementById('chatCtxMenu');if(m)m.classList.remove('show');}
+function ccPin(){const c=chats.find(x=>x.id===chatCtxId);if(c){c.pinned=!c.pinned;renderChatList();if(panelStack.length&&currentChat===c.id)renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}hideChatCtx();}
+function ccRemove(){const c=chats.find(x=>x.id===chatCtxId);if(c){c.hidden=true;if(currentChat===c.id){currentChat=null;showPage('empty');}renderChatList();toast('已从列表移除(聊天记录保留)');}hideChatCtx();}
 function clearChat(){conversations[currentChat]=[];renderMessages();toast('聊天记录已清空 🧹');}
 function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);renderChatList();toast('已退出群聊');}
 function blockFriend(fid){if(LIVE&&online)net.blackAdd(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已加入黑名单 🚫');}
@@ -954,7 +974,8 @@ function fmtTime(d,mode){if(!(d instanceof Date))d=new Date(d);const Y=d.getFull
 function updatePip(){const total=chats.reduce((a,c)=>a+(c.unread||0),0);const p=document.getElementById('navPip');if(total>0){p.textContent=total;p.classList.add('show');}else p.classList.remove('show');}
 
 document.addEventListener('click',e=>{const pop=document.getElementById('emojiPop');if(pop&&pop.classList.contains('show')&&!pop.contains(e.target)&&!e.target.closest('.tool-ic'))closeEmoji();
-  if(!e.target.closest('#addMenu')&&!e.target.closest('.head-add'))hideAddMenu();});
+  if(!e.target.closest('#addMenu')&&!e.target.closest('.head-add'))hideAddMenu();
+  if(!e.target.closest('#chatCtxMenu'))hideChatCtx();});
 
 /* ===== 窗口控制(桌面无边框时真实生效) ===== */
 function winCtl(act){
