@@ -4,7 +4,7 @@
 #
 #  在 WSL(Ubuntu) 或服务器机器上:
 #     bash scripts/wsl_up.sh
-#  之后在桌面客户端(desktop/, Electron)登录页「服务器地址」填本机 IP 即可。
+#  之后在桌面客户端(client/, C+WebKitGTK, bin/zoo-client)登录页「服务器地址」填本机 IP 即可。
 #
 #  这个脚本会:
 #    1) 启动 MariaDB                (service)
@@ -42,7 +42,8 @@ echo "[3/4] 编译 chat_server ..."
 make server
 
 echo "[4/4] 运行 chat_server(:8888)  (Ctrl-C 退出) ..."
-echo "    桌面客户端登录页「服务器地址」填本机 IP(本机用 127.0.0.1; 局域网用 ip addr 查到的地址)"
+echo "    桌面客户端: 另开终端 make client && bin/zoo-client"
+echo "    登录页「服务器地址」填本机 IP(本机用 127.0.0.1; 局域网用 ip addr 查到的地址)"
 echo ""
 exec env CHAT_DB_HOST=127.0.0.1 CHAT_DB_USER="$DB_USER" CHAT_DB_PASS="$DB_PASS" CHAT_DB_NAME="$DB_NAME" \
   bin/chat_server 8888

@@ -1043,11 +1043,12 @@ function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=docum
 })();
 
 /* ============================================================
-   实时后端连接层 (Electron 主进程 TCP -> chat_server)
-   - 经 http(s) 由 bridge 提供页面时启用 LIVE；file:// 双击则为演示模式
+   实时后端连接层 (宿主 window.zooNative -> C 服务器 TCP)
+   - 由桌面宿主(client/, C+WebKitGTK)注入 zooNative 时启用 LIVE；
+     直接浏览器 file:// 打开则为本地演示模式
    ============================================================ */
 const IS_NATIVE=(typeof window!=='undefined'&&!!window.zooNative);
-const LIVE=IS_NATIVE;                       /* 仅桌面版(Electron)直连服务器; 非桌面=本地演示 */
+const LIVE=IS_NATIVE;                       /* 仅桌面版(宿主注入 zooNative)直连服务器; 非桌面=本地演示 */
 let net=null,online=false,myAccount=null,liveProfiles={};
 let curHost=null,liveBound=false;
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}

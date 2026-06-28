@@ -1,8 +1,8 @@
 /* ============================================================
- * zoo-net.js  —  桌面端网络层 (经 Electron 主进程 TCP 直连 C 聊天服务器)
+ * zoo-net.js  —  桌面端网络层 (经宿主 window.zooNative 直连 C 聊天服务器)
  *
- *  - 通过 WebSocket 连到 bridge, 收发 JSON; bridge 负责与 4240B
- *    Message 结构互转。
+ *  - 宿主(client/, C + WebKitGTK)注入 window.zooNative, 负责真正的 TCP
+ *    收发与 JSON <-> 4240B Message 结构互转; 本文件只发/收 JSON 对象。
  *  - 纯逻辑, 不碰 DOM。UI 通过 on(type, fn) 订阅服务器推送。
  *  - 需要应答的请求 (登录/注册/建群/好友申请) 用 FIFO 解析队列等待
  *    下一条 MSG_RESPONSE (与服务器逐条应答的模型一致)。
@@ -45,7 +45,7 @@ class ZooNet {
     this._emit(m.type, m);
   }
 
-  /* 桌面版(Electron): 主进程(window.zooNative)直连 C 服务器 TCP */
+  /* 桌面版: 宿主(window.zooNative, C+WebKitGTK)直连 C 服务器 TCP */
   connect(host){
     const native = (typeof window !== 'undefined' && window.zooNative) ? window.zooNative : null;
     return new Promise((resolve, reject)=>{
