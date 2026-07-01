@@ -1214,13 +1214,13 @@ function finishInboundFile(key){const st=inboundFiles[key];if(!st)return;delete 
   c.preview=previewOf(msg);c.time=fmtTime(msg.time,'hm');
   if(currentChat!==c.id&&!c.muted)c.unread=(c.unread||0)+1;
   renderChatList();updatePip();if(currentChat===c.id)renderMessages();}
-/* 真正发送一个本地文件(图片或普通文件): LIVE 时经协议分片发给对方/群里所有人; 否则退回本地演示回声 */
+/* 真正发送一个本地文件(图片或普通文件): LIVE 时经协议分片发给对方/群里所有人;
+ * 否则(离线演示)仅在本地显示自己发的消息。无论在线/离线都不再触发任何假的自动回复。 */
 async function sendLocalFile(file){
   if(!currentChat||!file)return;const c=chats.find(x=>x.id===currentChat);if(!c)return;
   const isImg=/^image\//.test(file.type||'');
   if(!(LIVE&&online)){
     pushMsg(isImg?{from:'me',type:'image',src:URL.createObjectURL(file),text:file.name}:{from:'me',type:'file',text:file.name,size:file.size});
-    if(isImg)maybeReply();
     return;
   }
   if(file.size>FILE_MAX_BYTES){toast('文件过大, 最大支持 '+fmtSize(FILE_MAX_BYTES)+' 🙅');return;}
