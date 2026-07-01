@@ -620,11 +620,11 @@ void *client_thread(void *arg) {
             if (sz == 0 || sz > MAX_BODY_LEN) { resp(fd, RS_FAIL, "头像数据非法"); break; }
             mkdir("data", 0755);
             mkdir("data/avatars", 0755);
-            char path[128];
+            char path[128]; int is_group = 0, gid = 0;
             if (avatar_group_key(m.to_name)) {
-                int gid = atoi(m.to_name + 1);
+                gid = atoi(m.to_name + 1);
                 if (!db_group_is_member(gid, sess.uid)) { resp(fd, RS_FAIL, "你不是该群成员"); break; }
-                snprintf(path, sizeof(path), "data/avatars/g%d.png", gid);
+                snprintf(path, sizeof(path), "data/avatars/g%d.png", gid); is_group = 1;
             } else {
                 snprintf(path, sizeof(path), "data/avatars/%d.png", sess.uid);
             }
@@ -632,6 +632,27 @@ void *client_thread(void *arg) {
             if (!fp) { resp(fd, RS_FAIL, "保存失败"); break; }
             fwrite(m.body, 1, sz, fp);
             fclose(fp);
+            /* 主动把新头像推给相关在线用户, 解决对方"负缓存"(之前拉过一次为空
+             * 就不再拉)导致头像更新后对方看不到的问题. */
+            Message av; memset(&av, 0, sizeof(av));
+            av.type = MSG_AVATAR_DATA; av.status = sz; av.body_len = sz;
+            memcpy(av.body, m.body, sz);
+            if (is_group) {
+                snprintf(av.from_name, MAX_NAME_LEN, "g%d", gid);
+                int ids[1024]; int n = db_group_members(gid, ids, 1024);
+                for (int i = 0; i < n; ++i) if (ids[i] != sess.uid) online_push(ids[i], &av);
+            } else {
+                strncpy(av.from_name, sess.account, MAX_NAME_LEN - 1);
+                char list[8192]; list[0] = 0;
+                db_friend_list(sess.uid, list, sizeof(list), is_user_online);
+                char *line = strtok(list, "\n");
+                while (line) {
+                    char *tab = strchr(line, '\t'); if (tab) *tab = 0;
+                    int fid = db_user_id_by_account(line);
+                    if (fid > 0) online_push(fid, &av);
+                    line = strtok(NULL, "\n");
+                }
+            }
             resp(fd, RS_OK, "头像已更新");
             break;
         }

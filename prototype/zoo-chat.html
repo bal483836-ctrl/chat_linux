@@ -796,6 +796,9 @@ function openSingleChatByFriend(f){let c=chats.find(x=>x.type==='single'&&x.frie
 
 /* ===== 会话 ===== */
 function openChat(id){currentChat=id;const c=chats.find(x=>x.id===id);if(!c)return;c.hidden=false;showPage('chat');currentChat=id;
+  /* 进入会话时, 若之前把对方/群头像缓存成"无"(负缓存), 清掉让其重新拉取一次,
+   * 这样对方设置头像后再打开会话就能看到最新头像 */
+  if(LIVE&&online){const peer=c.type==='single'?c.friendId:c.id;if(peer&&avatarCache[peer]===null){delete avatarCache[peer];avatarFetching.delete(peer);}}
   document.getElementById('chatTitle').textContent=chatLabel(c);document.getElementById('chatSub').textContent=c.sub;
   document.getElementById('headAv').innerHTML=avHTML(c,'md');
   c.unread=0;renderChatList();updatePip();renderMessages();liveOpen(c);closeInfo();closeEmoji();}
@@ -820,7 +823,7 @@ function buildMsg(m,c){if(m.recalled){const r=document.createElement('div');r.cl
   else if(m.type==='file')inner=`<div class="fic">📄</div><div style="flex:1;min-width:0"><div style="font-weight:800;word-break:break-all">${esc(m.text)}</div><div style="font-size:11px;opacity:.7;margin-top:2px">${fmtSize(m.size)}</div>${xferMarkup(m)}</div>`;
   else if(m.type==='image')inner=`<div class="ph">${m.src?`<img src="${m.src}">`:'<span style="font-size:44px">🖼️</span>'}${xferMarkup(m)}</div>`;
   const bc='bubble'+(m.type==='file'?' file-b':'')+(m.type==='image'?' img-b':'');
-  const showName=(c.type==='group'&&!me);
+  const showName=(c&&c.type==='group'&&!me);
   row.innerHTML=`${avHTML(u,'sm')}<div class="bubble-wrap">${showName?`<div class="sender">${esc(u.name)}</div>`:''}<div class="${bc}">${inner}<div class="tsec">🕒 ${fmtTime(m.time,'full')}</div></div></div>`;
   row.querySelector('.av').onclick=()=>{if(!me)openPanel('profile',{user:u});};
   if(m.type==='image'&&m.src){const img=row.querySelector('.bubble.img-b img');if(img)img.addEventListener('click',e=>{e.stopPropagation();openLightbox(m.src);});}
@@ -1139,6 +1142,9 @@ function ensureAvatar(id){if(!(LIVE&&online)||!id||id==='me'||id===myAccount)ret
   if(avatarCache[id]!==undefined||avatarFetching.has(id))return;
   avatarFetching.add(id);net.avatarGet(id);}
 function rerenderAvatarViews(){renderChatList();renderContacts();if(currentChat)renderMessages();if(panelStack.length)renderPanel();
+  /* 聊天顶部头像也要跟着刷新(拉到对方新头像后) */
+  const cc=currentChat&&chats.find(x=>x.id===currentChat);const hv=document.getElementById('headAv');
+  if(cc&&hv&&!document.getElementById('pageChat').classList.contains('hidden'))hv.innerHTML=avHTML(cc,'md');
   if(profilePageUser&&!document.getElementById('pageProfile').classList.contains('hidden'))renderProfilePage(profilePageUser);}
 let curHost=null,liveBound=false;
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
