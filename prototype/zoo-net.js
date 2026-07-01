@@ -16,7 +16,8 @@ const T = {
   FRIEND_DEL:21, FRIEND_LIST:22, BLACK_ADD:23, BLACK_DEL:24,
   FRIEND_REQ:25, FRIEND_REQ_NOTIFY:26, FRIEND_REQ_REPLY:27, FRIEND_REQ_LIST:28, FRIEND_REMARK:29,
   GROUP_CREATE:30, GROUP_LIST:32, GROUP_MEMBERS:33,
-  GROUP_JOIN_REQ:34, GROUP_JOIN_NOTIFY:35, GROUP_JOIN_REPLY:36, GROUP_JOIN_REQ_LIST:37, GROUP_INVITE:39,
+  GROUP_JOIN_REQ:34, GROUP_JOIN_NOTIFY:35, GROUP_JOIN_REPLY:36, GROUP_JOIN_REQ_LIST:37,
+  GROUP_LEAVE:38, GROUP_INVITE:39,
   HISTORY_PRIV:40, HISTORY_GROUP:41, OFFLINE_PULL:42,
   FILE_BEGIN:50, FILE_CHUNK:51, FILE_END:52,
   NOTIFY_ONLINE:60, NOTIFY_OFFLINE:61,
@@ -87,10 +88,33 @@ class ZooNet {
   groupMembers(gid){ this.send({type:T.GROUP_MEMBERS, group_id:Number(gid)}); }
   groupInvite(gid, accounts){ return this._req({type:T.GROUP_INVITE, group_id:Number(gid), body:(accounts||[]).join('\n')}); }
   groupNotice(gid, text){ this.send({type:T.GROUP_NOTICE, group_id:Number(gid), body:text||''}); }
+  groupLeave(gid){ return this._req({type:T.GROUP_LEAVE, group_id:Number(gid)}); }
 
   /* ---- 个人资料 ---- */
   profileGet(acc){ this.send({type:T.PROFILE_GET, to_name: acc?String(acc):''}); }
   profileSet(nick, birth){ return this._req({type:T.PROFILE_SET, body:(nick||'')+'\n'+(birth||'')}); }
+
+  /* ---- 头像 (真实二进制字节, 走 bodyB64 保证不被当文本 UTF-8 解码破坏) ---- */
+  avatarUpload(base64Png, byteLen){ return this._req({type:T.AVATAR_UPLOAD, bodyB64:base64Png, status:Number(byteLen)||0}); }
+  avatarGet(acc){ this.send({type:T.AVATAR_GET, to_name:String(acc)}); }
+
+  /* ---- 文件/图片传输 (中继, 按分片发送) ----
+   * target: 私聊传对方账号, 群聊传 group_id; isGroup 决定填 to_name 还是 group_id */
+  fileBegin(target, isGroup, name, mime, size){
+    const o = {type:T.FILE_BEGIN, body:(name||'file')+'\t'+(mime||''), status:Number(size)||0};
+    if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
+    this.send(o);
+  }
+  fileChunk(target, isGroup, base64Chunk){
+    const o = {type:T.FILE_CHUNK, bodyB64:base64Chunk};
+    if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
+    this.send(o);
+  }
+  fileEnd(target, isGroup){
+    const o = {type:T.FILE_END};
+    if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
+    this.send(o);
+  }
 
   /* ---- 检索 ---- */
   userSearch(kw){ this.send({type:T.USER_SEARCH, body:kw}); }
@@ -110,6 +134,8 @@ class ZooNet {
     return { msgId:p[0], time:p[1], fromNick:p[2], kind:+p[3], peer:p[4], snippet:p[5] }; }); }
   static parseProfile(body){ const p=(body||'').split('\t');
     return { nick:p[0]||'', birth:p[1]||'', color:+p[2]||0, online:+p[3]===1 }; }
+  static parseUserSearch(body){ return splitLines(body).map(l=>{ const p=l.split('\t');
+    return { account:p[0], nick:p[1], color:+p[2]||0, online:+p[3]===1 }; }); }
 }
 function splitLines(s){ return (s||'').split('\n').map(x=>x.trim()).filter(Boolean); }
 

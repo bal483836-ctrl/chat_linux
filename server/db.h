@@ -40,6 +40,7 @@ int  db_group_list_for_user(int uid, char *out, int outsz);
 int  db_group_members(int gid, int *ids, int max);                 /* 返回个数 */
 int  db_group_is_member(int gid, int uid);                         /* 1/0 */
 int  db_group_add_member(int gid, int uid);                        /* INSERT IGNORE, 0/-1 */
+int  db_group_leave(int gid, int uid);                             /* 退出群(删除成员行), 0/-1 */
 int  db_group_notice_get(int gid, char *out, int outsz);           /* 取群公告, 0/-1 */
 int  db_group_set_notice(int gid, const char *notice);             /* 设群公告, 0/-1 */
 

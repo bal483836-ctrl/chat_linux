@@ -352,6 +352,11 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
 .crop-zoom input{flex:1;accent-color:var(--green);}
 .crop-foot{display:flex;gap:10px;margin-top:14px;}
 .crop-foot .pill{flex:1;}
+/* 图片放大预览 */
+.lightbox{position:absolute;inset:0;z-index:280;background:rgba(20,12,6,.82);display:none;align-items:center;justify-content:center;cursor:zoom-out;}
+.lightbox.show{display:flex;}
+.lightbox img{max-width:90%;max-height:90%;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);cursor:default;}
+.bubble.img-b .ph{cursor:zoom-in;}
 .hidden{display:none!important;}
 </style>
 </head>
@@ -413,7 +418,7 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
         <div class="nav-rail">
           <div class="me-av" id="navMeAv" onclick="openProfilePanel(ME)"></div>
           <div class="me-name" id="navMeName">橘座</div>
-          <div class="nav-ic on" data-tab="msg" onclick="switchTab('msg')" title="消息">💬<span class="pip show" id="navPip">3</span></div>
+          <div class="nav-ic on" data-tab="msg" onclick="switchTab('msg')" title="消息">💬<span class="pip" id="navPip">0</span></div>
           <div class="nav-ic" data-tab="contacts" onclick="switchTab('contacts')" title="联系人">👥<span class="pip" id="reqPip"></span></div>
           <div class="nav-grow"></div>
           <div class="nav-ic" onclick="showPage('settings');closeInfo()" title="设置">⚙️</div>
@@ -507,6 +512,7 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
     <div class="ctx-menu" id="ctxMenu">
       <div class="ctx-item" onclick="ctxAction('time')"><span class="ci">🕒</span>显示时间</div>
       <div class="ctx-item" onclick="ctxAction('copy')"><span class="ci">📋</span>复制</div>
+      <div class="ctx-item" id="ctxDownload" onclick="ctxAction('download')"><span class="ci">⬇️</span>下载</div>
       <div class="ctx-item" id="ctxRecall" onclick="ctxAction('recall')"><span class="ci">↩️</span>撤回</div>
       <div class="ctx-item danger" onclick="ctxAction('delete')"><span class="ci">🗑️</span>删除</div>
     </div>
@@ -543,6 +549,8 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
   <input type="file" id="fileInput" style="display:none">
   <input type="file" id="imgInput" accept="image/*" style="display:none">
   <div class="toast" id="toast"></div>
+  <!-- 图片放大预览 -->
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()"><img id="lightboxImg" src="" alt=""></div>
 </div>
 
 <script src="zoo-net.js"></script>
@@ -613,10 +621,18 @@ const EMOJIS=['😀','😂','🥰','😎','🤩','😭','😡','👍','🙏','�
 let currentChat=null, ctxTarget=null, panelStack=[];
 function userById(id){if(id==='me')return ME;return friends.find(f=>f.id===id)||strangers.find(s=>s.id===id)||{name:'神秘伙伴',color:'c-cat',animal:'cat',img:ASSET('cat'),emoji:'❓'};}
 function avKey(u){return u.animal||((u.color||'c-cat').slice(2));}
-/* 头像: 自定义上传图优先; 否则 assets/pa/<key>.png(真实角色图) -> 占位图 -> emoji */
+/* 头像: 自定义上传图优先(本人=ME.customImg, 他人=服务器头像缓存 avatarCache);
+ * 否则 assets/pa/<key>.png(真实角色图) -> 占位图 -> emoji.
+ * 他人头像若尚未拉取过, 顺带触发一次 net.avatarGet(), 拉回来后自动重渲染. */
 function avHTML(u,size,sq){const k=avKey(u);
-  const src=u.customImg?u.customImg:('assets/pa/'+k+'.png');
-  const fb=u.customImg?'':('assets/'+k+'.png');
+  /* u 有时是"会话"对象(私聊会话 id 形如 c_100002, 不是真账号), 有时是真正的
+   * 用户/ME 对象; 头像缓存必须按真实账号 key, 否则私聊列表/会话头拿不到已同步的头像 */
+  const acc=u&&(u.type==='single'?u.friendId:u.id);
+  const isMe=acc==='me'||acc===myAccount;
+  const custom=isMe?ME.customImg:(acc&&avatarCache[acc]);
+  if(!isMe&&acc&&avatarCache[acc]===undefined)ensureAvatar(acc);
+  const src=custom?custom:('assets/pa/'+k+'.png');
+  const fb=custom?'':('assets/'+k+'.png');
   return `<div class="av av-${size} ${u.color||('c-'+k)}${sq?' av-sq':''}">
     <img src="${src}" ${fb?`data-fb="${fb}"`:''} alt=""
       onerror="if(this.dataset.fb){this.src=this.dataset.fb;this.dataset.fb='';}else{this.style.display='none';this.nextElementSibling.style.display='inline-block';}">
@@ -655,7 +671,7 @@ async function doLogin(){const acc=document.getElementById('lgEmail').value.trim
     if(r.status!==ZooNet.RS.OK){document.getElementById('lgErr').textContent=r.body||'账号或密码错误';return;}
     const parts=(r.body||'').split('\n');myAccount=parts[0];ME.zoo=parts[0];if(parts[1])ME.name=parts[1];
     restoreMyAvatar(myAccount);saveRemember(acc,p);
-    liveResetData();refreshMe();renderChatList();renderContacts();enterApp();return;}
+    liveResetData();refreshMe();renderChatList();renderContacts();updatePip();net.avatarGet(myAccount);enterApp();return;}
   saveRemember(acc,p);enterApp();}
 async function doRegister(){const n=document.getElementById('rgName').value.trim(),e=document.getElementById('rgEmail').value.trim(),
   b=document.getElementById('rgBirth').value,p=document.getElementById('rgPwd').value,p2=document.getElementById('rgPwd2').value;
@@ -671,7 +687,7 @@ async function doRegister(){const n=document.getElementById('rgName').value.trim
     ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=r.body;ME.birth=b||ME.birth;
     if(lr.status===ZooNet.RS.OK){const pp=(lr.body||'').split('\n');ME.name=pp[1]||n;}
     saveMyAvatar();saveRemember(e,p);
-    liveResetData();refreshMe();renderChatList();renderContacts();toast('账号 '+r.body+' 创建成功 🎉');enterApp();return;}
+    liveResetData();refreshMe();renderChatList();renderContacts();updatePip();toast('账号 '+r.body+' 创建成功 🎉');enterApp();return;}
   ME.name=n;ME.birth=b||ME.birth;ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);
   ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=(e.split('@')[0]||'zoo')+'_'+Math.floor(Math.random()*900+100);
   refreshMe();toast('账号创建成功 🎉');enterApp();}
@@ -760,9 +776,17 @@ function openChat(id){currentChat=id;const c=chats.find(x=>x.id===id);if(!c)retu
   document.getElementById('chatTitle').textContent=chatLabel(c);document.getElementById('chatSub').textContent=c.sub;
   document.getElementById('headAv').innerHTML=avHTML(c,'md');
   c.unread=0;renderChatList();updatePip();renderMessages();liveOpen(c);closeInfo();closeEmoji();}
-function liveOpen(c){if(!(LIVE&&online))return;conversations[c.id]=[];renderMessages();
+function liveOpen(c){if(!(LIVE&&online))return;
+  /* 图片/文件是本地才有的(服务器历史只有文本), 重新拉历史前保留下来再合并,
+   * 否则每次切换会话都会被清空且再也拿不回来(即使对方也收到了)。
+   * renderMessages() 渲染前会按时间重新排序, 所以顺序不受影响。 */
+  const keepAttach=(conversations[c.id]||[]).filter(m=>m.type==='image'||m.type==='file');
+  conversations[c.id]=keepAttach;
+  renderMessages();
   if(c.type==='group'){net.groupMembers(c.gid);net.historyGroup(c.gid);}else{net.historyPriv(c.friendId);}}
-function renderMessages(){const box=document.getElementById('msgs');const list=conversations[currentChat]||[];const c=chats.find(x=>x.id===currentChat);
+function renderMessages(){const box=document.getElementById('msgs');
+  const list=(conversations[currentChat]||[]).slice().sort((a,b)=>new Date(a.time)-new Date(b.time));
+  const c=chats.find(x=>x.id===currentChat);
   box.innerHTML='';let lastSep=null;
   list.forEach(m=>{const sep=fmtTime(m.time,'hm');if(sep!==lastSep){const s=document.createElement('div');s.className='time-sep';s.textContent=fmtTime(m.time,'daymin');lastSep=sep;box.appendChild(s);}box.appendChild(buildMsg(m,c));});
   setTimeout(()=>box.scrollTop=box.scrollHeight,20);}
@@ -776,7 +800,11 @@ function buildMsg(m,c){if(m.recalled){const r=document.createElement('div');r.cl
   const showName=(c.type==='group'&&!me);
   row.innerHTML=`${avHTML(u,'sm')}<div class="bubble-wrap">${showName?`<div class="sender">${esc(u.name)}</div>`:''}<div class="${bc}">${inner}<div class="tsec">🕒 ${fmtTime(m.time,'full')}</div></div></div>`;
   row.querySelector('.av').onclick=()=>{if(!me)openPanel('profile',{user:u});};
+  if(m.type==='image'&&m.src){const img=row.querySelector('.bubble.img-b img');if(img)img.addEventListener('click',e=>{e.stopPropagation();openLightbox(m.src);});}
   bindCtx(row.querySelector('.bubble'),m,row);return row;}
+/* 图片放大预览 */
+function openLightbox(src){if(!src)return;document.getElementById('lightboxImg').src=src;document.getElementById('lightbox').classList.add('show');}
+function closeLightbox(){document.getElementById('lightbox').classList.remove('show');}
 
 /* ===== 发送 ===== */
 function pushMsg(msg){if(!conversations[currentChat])conversations[currentChat]=[];msg.id=Date.now()+Math.random();msg.time=new Date();conversations[currentChat].push(msg);renderMessages();
@@ -791,9 +819,9 @@ function autoGrow(t){t.style.height='auto';t.style.height=Math.min(t.scrollHeigh
 function maybeReply(){const c=chats.find(x=>x.id===currentChat);if(!c)return;const fromId=c.type==='group'?(c.members?c.members[0]:'dog'):(c.friendId||'dog');
   const lines=['收到收到 🎉','哈哈哈哈','这就来！','稳了 😎','+1','晚点见~','好嘞 👌'];
   setTimeout(()=>{if(currentChat===c.id)pushMsg({from:fromId,type:'text',text:lines[Math.floor(Math.random()*lines.length)]});},1100);}
-/* 文件选择器 */
-function pickImage(){if(!currentChat)return;const i=document.getElementById('imgInput');i.value='';i.onchange=()=>{const f=i.files[0];if(!f)return;pushMsg({from:'me',type:'image',src:URL.createObjectURL(f),name:f.name});maybeReply();};i.click();}
-function pickFile(){if(!currentChat)return;const i=document.getElementById('fileInput');i.value='';i.onchange=()=>{const f=i.files[0];if(!f)return;pushMsg({from:'me',type:'file',text:f.name,size:f.size});};i.click();}
+/* 文件选择器: 真实发送(LIVE 时经协议分片传给对方/群里所有人, 不再是本地假回声) */
+function pickImage(){if(!currentChat)return;const i=document.getElementById('imgInput');i.value='';i.onchange=()=>{const f=i.files[0];if(f)sendLocalFile(f);};i.click();}
+function pickFile(){if(!currentChat)return;const i=document.getElementById('fileInput');i.value='';i.onchange=()=>{const f=i.files[0];if(f)sendLocalFile(f);};i.click();}
 
 /* 表情 */
 function buildEmoji(){const g=document.getElementById('emojiGrid');g.innerHTML='';EMOJIS.forEach(e=>{const b=document.createElement('button');b.textContent=e;b.onclick=()=>{const i=document.getElementById('msgInput');i.value+=e;i.focus();autoGrow(i);};g.appendChild(b);});}
@@ -805,6 +833,7 @@ function bindCtx(el,m,row){el.addEventListener('contextmenu',e=>{e.preventDefaul
   let timer=null;el.addEventListener('touchstart',e=>{timer=setTimeout(()=>{const t=e.touches[0];showCtx(t.clientX,t.clientY,m,row);},480);},{passive:true});
   ['touchend','touchmove','touchcancel'].forEach(ev=>el.addEventListener(ev,()=>clearTimeout(timer)));}
 function showCtx(x,y,m,row){ctxTarget={m,row};document.getElementById('ctxRecall').style.display=(m.from==='me'?'flex':'none');
+  document.getElementById('ctxDownload').style.display=((m.type==='image'||m.type==='file')?'flex':'none');
   const mask=document.getElementById('ctxMask'),menu=document.getElementById('ctxMenu');mask.classList.add('show');
   const w=document.querySelector('.window').getBoundingClientRect();const mw=170,mh=190;
   let px=Math.min(x-w.left,w.width-mw-10),py=Math.min(y-w.top,w.height-mh-10);menu.style.left=Math.max(8,px)+'px';menu.style.top=Math.max(8,py)+'px';}
@@ -812,6 +841,7 @@ function closeCtx(){document.getElementById('ctxMask').classList.remove('show');
 function ctxAction(act){if(!ctxTarget){closeCtx();return;}const {m,row}=ctxTarget;
   if(act==='time'){const b=row.querySelector('.bubble');b&&b.classList.toggle('show-time');}
   else if(act==='copy'){navigator.clipboard&&navigator.clipboard.writeText(m.text||'[非文本消息]');toast('已复制 📋');}
+  else if(act==='download'){if(m.src){const a=document.createElement('a');a.href=m.src;a.download=m.text||('zoo_'+Date.now());document.body.appendChild(a);a.click();a.remove();toast('开始下载 ⬇️');}else toast('文件不可用');}
   else if(act==='recall'){m.recalled=true;renderMessages();toast('已撤回 ↩️');}
   else if(act==='delete'){const arr=conversations[currentChat];const i=arr.findIndex(x=>x.id===m.id);if(i>-1)arr.splice(i,1);renderMessages();toast('已删除 🗑️');}closeCtx();}
 
@@ -887,7 +917,10 @@ function hideChatCtx(){const m=document.getElementById('chatCtxMenu');if(m)m.cla
 function ccPin(){const c=chats.find(x=>x.id===chatCtxId);if(c){c.pinned=!c.pinned;renderChatList();if(panelStack.length&&currentChat===c.id)renderInfo();toast(c.pinned?'已置顶 📌':'已取消置顶');}hideChatCtx();}
 function ccRemove(){const c=chats.find(x=>x.id===chatCtxId);if(c){c.hidden=true;if(currentChat===c.id){currentChat=null;showPage('empty');}renderChatList();toast('已从列表移除(聊天记录保留)');}hideChatCtx();}
 function clearChat(){conversations[currentChat]=[];renderMessages();toast('聊天记录已清空 🧹');}
-function leaveGroup(){const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);renderChatList();toast('已退出群聊');}
+function leaveGroup(){const id=currentChat;const c=chats.find(x=>x.id===id);if(!c)return;
+  const doRemove=()=>{closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);delete conversations[id];renderChatList();};
+  if(LIVE&&online){net.groupLeave(c.gid).then(r=>{if(r.status===ZooNet.RS.OK){doRemove();toast('已退出群聊');}else toast(r.body||'退出失败');});return;}
+  doRemove();toast('已退出群聊');}
 function blockFriend(fid){if(LIVE&&online)net.blackAdd(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已加入黑名单 🚫');}
 function deleteFriend(fid){if(LIVE&&online)net.friendDel(fid);const id=currentChat;closeInfo();showPage('empty');const i=chats.findIndex(x=>x.id===id);if(i>-1)chats.splice(i,1);const fi=friends.findIndex(f=>f.id===fid);if(fi>-1)friends.splice(fi,1);renderChatList();renderContacts();toast('已删除好友 🗑️');}
 
@@ -941,7 +974,9 @@ function renderSearchPanel(){const inner=document.getElementById('infoInner');
     <div class="seg">${tabs.map(t=>`<div class="sg ${searchTab===t[0]?'on':''}" onclick="setSearchTab('${t[0]}')">${t[1]}</div>`).join('')}</div>
     <div id="seBody"></div></div>`;
   setTimeout(renderSearchBody,0);}
-function renderSearchBody(){const box=document.getElementById('seBody');if(!box)return;const list=(conversations[currentChat]||[]).filter(m=>!m.recalled);const k=searchKey.trim();
+function renderSearchBody(){const box=document.getElementById('seBody');if(!box)return;
+  const list=(conversations[currentChat]||[]).filter(m=>!m.recalled).slice().sort((a,b)=>new Date(a.time)-new Date(b.time));
+  const k=searchKey.trim();
   if(searchTab==='chat'){let hits=list.filter(m=>m.type==='text'&&(!k||m.text.includes(k)));
     if(!hits.length){box.innerHTML='<div class="res-empty">没有找到相关消息 🔍</div>';return;}
     box.innerHTML=hits.map(m=>{const u=userById(m.from);const hl=k?esc(m.text).replace(new RegExp('('+k.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+')','g'),'<b style="color:var(--yellow-d)">$1</b>'):esc(m.text);
@@ -960,9 +995,10 @@ function jumpTo(mid){const row=document.querySelector('.msg[data-id="'+mid+'"]')
 
 /* ===== 加好友(页内) ===== */
 function liveFriendReq(acc){net.friendReq(acc,'交个朋友吧~').then(r=>toast(r.body||'已发送好友申请'));}
+let afSearchTimer=null;
 function searchStranger(v){const box=document.getElementById('afResult');v=v.trim();if(!v){box.innerHTML='';return;}
-  if(LIVE&&online){if(!/^\d{6,}$/.test(v)){box.innerHTML='<div class="res-empty">实时模式：请输入对方 6 位以上 zoo 账号</div>';return;}
-    box.innerHTML=`<div class="search-res"><div class="av av-md c-cat"><span class="fb">👤</span></div><div class="nm"><div class="n">账号 ${esc(v)}</div><div class="z">向 TA 发送好友申请</div></div><button class="pill green sm" onclick="liveFriendReq('${esc(v)}')">申请</button></div>`;return;}
+  if(LIVE&&online){box.innerHTML='<div class="res-empty">搜索中… 🔍</div>';
+    clearTimeout(afSearchTimer);afSearchTimer=setTimeout(()=>net.userSearch(v),220);return;}
   const pool=[...strangers,...friends];const hit=pool.find(p=>p.name.includes(v)||(p.zoo&&p.zoo.includes(v)))||strangers[0];const already=friends.some(f=>f.id===hit.id);
   box.innerHTML=`<div class="search-res">${avHTML(hit,'md')}<div class="nm"><div class="n">${esc(hit.name)}</div><div class="z">zoo 号: ${hit.zoo}</div></div>${already?'<span style="color:var(--ink-soft);font-weight:800;font-size:13px">已是好友</span>':`<button class="pill green sm" onclick="addNewFriend('${hit.id}')">添加</button>`}</div>`;}
 function addNewFriend(id){let u=strangers.find(s=>s.id===id);if(u){strangers.splice(strangers.indexOf(u),1);}else{u=userById(id);}
@@ -990,7 +1026,7 @@ function fmtSize(b){if(!b)return'';if(b<1024)return b+' B';if(b<1048576)return (
 function fmtTime(d,mode){if(!(d instanceof Date))d=new Date(d);const Y=d.getFullYear(),M=pad(d.getMonth()+1),D=pad(d.getDate()),h=pad(d.getHours()),m=pad(d.getMinutes()),s=pad(d.getSeconds());
   if(mode==='full')return `${Y}-${M}-${D} ${h}:${m}:${s}`;if(mode==='date')return `${Y}-${M}-${D}`;if(mode==='hms')return `${h}:${m}:${s}`;
   if(mode==='daymin'){const today=new Date();const same=d.toDateString()===today.toDateString();return (same?'':M+'/'+D+' ')+`${h}:${m}`;}return `${h}:${m}`;}
-function updatePip(){const total=chats.reduce((a,c)=>a+(c.unread||0),0);const p=document.getElementById('navPip');if(total>0){p.textContent=total;p.classList.add('show');}else p.classList.remove('show');}
+function updatePip(){const total=chats.reduce((a,c)=>a+(c.unread||0),0);const p=document.getElementById('navPip');p.textContent=total;p.classList.toggle('show',total>0);}
 
 document.addEventListener('click',e=>{const pop=document.getElementById('emojiPop');if(pop&&pop.classList.contains('show')&&!pop.contains(e.target)&&!e.target.closest('.tool-ic'))closeEmoji();
   if(!e.target.closest('#addMenu')&&!e.target.closest('.head-add'))hideAddMenu();
@@ -1027,7 +1063,18 @@ function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=docum
   const ctx=cv.getContext('2d');const r=OUT/s.S;
   ctx.drawImage(s.img,s.x*r,s.y*r,s.nw*s.base*s.zoom*r,s.nh*s.base*s.zoom*r);
   const data=cv.toDataURL('image/png');
-  if(cropTarget==='me'){ME.customImg=data;refreshMe();saveMyAvatar();}
+  if(cropTarget==='me'){
+    ME.customImg=data;refreshMe();saveMyAvatar();
+    /* 同步到服务器, 好友端才能看到和我这边一致的头像(MSG_AVATAR_UPLOAD 单条消息 <=4096B,
+     * 所以额外渲染一张 64x64 小图上传, 本地大图仍用于自己界面里更清晰的显示) */
+    if(LIVE&&online){
+      const uc=document.createElement('canvas');uc.width=64;uc.height=64;
+      uc.getContext('2d').drawImage(cv,0,0,64,64);
+      const raw=(uc.toDataURL('image/png').split(',')[1])||'';
+      const bytes=Math.floor(raw.replace(/=+$/,'').length*3/4);
+      if(bytes>0)net.avatarUpload(raw,bytes).then(r=>{if(r.status!==ZooNet.RS.OK)toast('头像同步失败，请重试');});
+    }
+  }
   else{const c=chats.find(x=>x.id===cropTarget);if(c)c.customImg=data;}
   closeCrop();renderChatList();renderContacts();
   if(currentChat){const cc=chats.find(x=>x.id===currentChat);if(cc&&document.getElementById('headAv'))document.getElementById('headAv').innerHTML=avHTML(cc,'md');renderMessages();}
@@ -1050,6 +1097,13 @@ function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=docum
 const IS_NATIVE=(typeof window!=='undefined'&&!!window.zooNative);
 const LIVE=IS_NATIVE;                       /* 仅桌面版(宿主注入 zooNative)直连服务器; 非桌面=本地演示 */
 let net=null,online=false,myAccount=null,liveProfiles={};
+/* 头像缓存: account -> dataURL(已拉到) / null(服务器确认无自定义头像) / undefined(还没拉过) */
+let avatarCache={},avatarFetching=new Set();
+function ensureAvatar(id){if(!(LIVE&&online)||!id||id==='me'||id===myAccount)return;
+  if(avatarCache[id]!==undefined||avatarFetching.has(id))return;
+  avatarFetching.add(id);net.avatarGet(id);}
+function rerenderAvatarViews(){renderChatList();renderContacts();if(currentChat)renderMessages();if(panelStack.length)renderPanel();
+  if(profilePageUser&&!document.getElementById('pageProfile').classList.contains('hidden'))renderProfilePage(profilePageUser);}
 let curHost=null,liveBound=false;
 function colorAnimal(i){return ANIMALS[((i||0)%ANIMALS.length+ANIMALS.length)%ANIMALS.length].key;}
 function liveStatus(txt,ok){const el=document.getElementById('netStatus');if(el){el.textContent=txt;el.className='net-status '+(ok?'on':'off');}}
@@ -1092,6 +1146,16 @@ function bindLive(){if(liveBound)return;liveBound=true;const T=ZooNet.T;
     if(profilePageUser&&profilePageUser.id===m.from_name&&!document.getElementById('pageProfile').classList.contains('hidden')){profilePageUser.birth=p.birth;renderProfilePage(profilePageUser);}});
   net.on(T.FRIEND_REQ_NOTIFY,m=>addPendingReq(m));
   net.on(T.FRIEND_REQ_LIST,m=>setPendingReqs(m.body));
+  net.on(T.AVATAR_DATA,m=>{const acc=m.from_name;
+    if(acc===myAccount){if(m.status>0)ME.customImg='data:image/png;base64,'+m.bodyB64;refreshMe();rerenderAvatarViews();return;}
+    avatarFetching.delete(acc);avatarCache[acc]=(m.status>0)?('data:image/png;base64,'+m.bodyB64):null;rerenderAvatarViews();});
+  net.on(T.USER_SEARCH,m=>renderUserSearchResults(m.body));
+  net.on(T.FILE_BEGIN,m=>{const gid=m.group_id||0;inboundFiles[fileKey(m.from_name,gid)]={
+    from:m.from_name,fromNick:m.from_nick,gid,name:(m.body||'').split('\t')[0]||'file',
+    mime:(m.body||'').split('\t')[1]||'',size:m.status,chunks:[]};});
+  net.on(T.FILE_CHUNK,m=>{const gid=m.group_id||0;const st=inboundFiles[fileKey(m.from_name,gid)];
+    if(st&&m.bodyB64)st.chunks.push(b64ToU8(m.bodyB64));});
+  net.on(T.FILE_END,m=>{finishInboundFile(fileKey(m.from_name,m.group_id||0));});
   net.on('close',()=>{online=false;liveStatus('连接已断开',false);});}
 function liveResetData(){friends.length=0;strangers.length=0;chats.length=0;pendingReqs=[];updateReqBadge();Object.keys(conversations).forEach(k=>delete conversations[k]);}
 function ensureUser(account,nick,color){if(account===myAccount)return ME;
@@ -1126,6 +1190,64 @@ function incomingMsg(kind,m){ensureUser(m.from_name,m.from_nick,0);let c;
   renderChatList();updatePip();if(currentChat===c.id)renderMessages();}
 function setOnlineState(account,on){const f=friends.find(x=>x.id===account);if(f)f.online=on;
   const c=chats.find(x=>x.friendId===account);if(c){c.sub=on?'在线':'离线';if(currentChat===c.id)document.getElementById('chatSub').textContent=c.sub;}renderContacts();}
+
+/* ===== 二进制 <-> base64 (用于图片/文件分片传输、头像) ===== */
+function u8ToB64(u8){let s='';const CH=0x8000;for(let i=0;i<u8.length;i+=CH)s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH));return btoa(s);}
+function b64ToU8(b64){const s=atob(b64);const u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
+
+/* ===== 图片/文件传输(真实收发, 经 FILE_BEGIN/CHUNK/END 中继) ===== */
+const FILE_MAX_BYTES=6*1024*1024;   /* 单文件上限 6MB, 避免海量小分片拖垮 UI */
+const FILE_CHUNK_RAW=2048;
+let inboundFiles={};
+function fileKey(from,gid){return gid?('g:'+gid):('p:'+from);}
+function finishInboundFile(key){const st=inboundFiles[key];if(!st)return;delete inboundFiles[key];
+  const blob=new Blob(st.chunks,{type:st.mime||'application/octet-stream'});
+  const url=URL.createObjectURL(blob);
+  const isImg=/^image\//.test(st.mime||'')||/\.(png|jpe?g|gif|webp|bmp)$/i.test(st.name||'');
+  ensureUser(st.from,st.fromNick,0);
+  let c;
+  if(st.gid){c=chats.find(x=>x.gid===st.gid);
+    if(!c){c=Object.assign(mk('g'+st.gid,'群聊 '+st.gid,'cat'),{type:'group',gid:st.gid,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}}
+  else{c=ensureSingleChat(st.from,st.fromNick,0);}
+  const msg={id:Date.now()+Math.random(),from:st.from,type:isImg?'image':'file',text:st.name,size:st.size,src:url,time:new Date()};
+  (conversations[c.id]=conversations[c.id]||[]).push(msg);
+  c.preview=previewOf(msg);c.time=fmtTime(msg.time,'hm');
+  if(currentChat!==c.id&&!c.muted)c.unread=(c.unread||0)+1;
+  renderChatList();updatePip();if(currentChat===c.id)renderMessages();}
+/* 真正发送一个本地文件(图片或普通文件): LIVE 时经协议分片发给对方/群里所有人; 否则退回本地演示回声 */
+async function sendLocalFile(file){
+  if(!currentChat||!file)return;const c=chats.find(x=>x.id===currentChat);if(!c)return;
+  const isImg=/^image\//.test(file.type||'');
+  if(!(LIVE&&online)){
+    pushMsg(isImg?{from:'me',type:'image',src:URL.createObjectURL(file),text:file.name}:{from:'me',type:'file',text:file.name,size:file.size});
+    if(isImg)maybeReply();
+    return;
+  }
+  if(file.size>FILE_MAX_BYTES){toast('文件过大, 最大支持 '+fmtSize(FILE_MAX_BYTES)+' 🙅');return;}
+  const isGroup=c.type==='group',target=isGroup?c.gid:c.friendId;
+  const buf=await file.arrayBuffer();const bytes=new Uint8Array(buf);
+  net.fileBegin(target,isGroup,file.name,file.type||'',bytes.length);
+  for(let off=0;off<bytes.length;off+=FILE_CHUNK_RAW)net.fileChunk(target,isGroup,u8ToB64(bytes.subarray(off,off+FILE_CHUNK_RAW)));
+  net.fileEnd(target,isGroup);
+  const url=URL.createObjectURL(file);
+  pushMsg(isImg?{from:'me',type:'image',src:url,text:file.name}:{from:'me',type:'file',text:file.name,size:file.size,src:url});
+}
+
+/* ===== 加好友搜索结果(真实: 服务器按账号/昵称查, 带头像+昵称) ===== */
+function renderUserSearchResults(body){
+  const box=document.getElementById('afResult');
+  if(!box||document.getElementById('pageAddFriend').classList.contains('hidden'))return;
+  const rows=ZooNet.parseUserSearch(body);
+  if(!rows.length){box.innerHTML='<div class="res-empty">没有找到相关用户 🔍</div>';return;}
+  box.innerHTML=rows.map(r=>{
+    const u={id:r.account,zoo:r.account,name:r.nick||('用户'+r.account),animal:colorAnimal(r.color),color:'c-'+colorAnimal(r.color)};
+    const already=friends.some(f=>f.id===r.account),isSelf=r.account===myAccount;
+    const action=isSelf?'<span style="color:var(--ink-soft);font-weight:800;font-size:13px">这是你自己</span>'
+      :already?'<span style="color:var(--ink-soft);font-weight:800;font-size:13px">已是好友</span>'
+      :`<button class="pill green sm" onclick="liveFriendReq('${esc(r.account)}')">申请</button>`;
+    return `<div class="search-res">${avHTML(u,'md')}<div class="nm"><div class="n">${esc(u.name)}</div><div class="z">zoo 号: ${esc(r.account)}${r.online?' · 在线':''}</div></div>${action}</div>`;
+  }).join('');
+}
 
 /* init */
 document.getElementById('parade').innerHTML=['croc','bunny','dog','tiger','wolf'].map(k=>avHTML({color:'c-'+k,img:ASSET(k),emoji:(ANIMALS.find(a=>a.key===k)||{}).emoji},'lg')).join('');

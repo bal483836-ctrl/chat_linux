@@ -87,6 +87,29 @@ static void do_private(Session *s, Message *m) {
     resp(s->fd, RS_OK, "sent");
 }
 
+/* 把最新群成员列表推给群里的每个在线成员(退群/邀请后调用, 让大家实时看到变化) */
+static void push_group_members(int gid) {
+    int ids[1024];
+    int n = db_group_members(gid, ids, 1024);
+    if (n <= 0) return;
+    Message o; memset(&o, 0, sizeof(o));
+    o.type = MSG_GROUP_MEMBERS; o.group_id = gid;
+    int used = 0;
+    for (int i = 0; i < n; ++i) {
+        char nick[MAX_NAME_LEN] = {0};
+        db_get_nick(ids[i], nick, sizeof(nick));
+        int color  = db_get_avatar_color(ids[i]);
+        int online = (online_get_fd_by_id(ids[i]) >= 0) ? 1 : 0;
+        int k = snprintf(o.body + used, MAX_BODY_LEN - used,
+                         "%d\t%s\t%d\t%d\n", ids[i] + ACCOUNT_BASE, nick, color, online);
+        if (k <= 0 || k >= MAX_BODY_LEN - used) break;
+        used += k;
+    }
+    o.body_len = used;
+    fill_timestamp(o.timestamp, sizeof(o.timestamp));
+    online_broadcast(ids, n, &o, -1);
+}
+
 /* 处理群聊 */
 static void do_group(Session *s, Message *m) {
     if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }
@@ -416,15 +439,25 @@ void *client_thread(void *arg) {
             break;
         }
 
-        /* 文件传输: 服务器作为中继, 透明转发 */
+        /* 文件传输: 服务器作为中继, 透明转发.
+         * group_id!=0 时按群转发给除自己外的全部在线成员; 否则按 to_name 私发. */
         case MSG_FILE_BEGIN:
         case MSG_FILE_CHUNK:
         case MSG_FILE_END: {
-            int to = db_user_id_by_account(m.to_name);
-            if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
             Message f = m;
             strncpy(f.from_name, sess.account, MAX_NAME_LEN - 1);
-            online_push(to, &f);
+            strncpy(f.from_nick, sess.nick,    MAX_NAME_LEN - 1);
+            if (m.group_id > 0) {
+                int members[1024];
+                int n = db_group_members(m.group_id, members, 1024);
+                if (n <= 0) { resp(fd, RS_GROUP_NOT_FOUND, "no such group"); break; }
+                online_broadcast(members, n, &f, sess.uid);
+            } else {
+                int to = db_user_id_by_account(m.to_name);
+                if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
+                online_push(to, &f);
+            }
             break;
         }
 
@@ -551,6 +584,18 @@ void *client_thread(void *arg) {
             o.type = MSG_GROUP_JOIN_REQ_LIST;
             o.body_len = db_greq_list_for_owner(sess.uid, o.body, MAX_BODY_LEN);
             send_msg(fd, &o);
+            break;
+        }
+
+        /* 退出群聊: 群主不能直接退出(先转让/解散), 其余成员直接移除membership */
+        case MSG_GROUP_LEAVE: {
+            if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            int gid = m.group_id;
+            if (!db_group_is_member(gid, sess.uid)) { resp(fd, RS_FAIL, "你不在该群"); break; }
+            if (db_group_owner(gid) == sess.uid) { resp(fd, RS_FAIL, "群主不能退出群聊"); break; }
+            db_group_leave(gid, sess.uid);
+            push_group_members(gid);   /* 让其余成员实时看到你已退出 */
+            resp(fd, RS_OK, "已退出群聊");
             break;
         }
 

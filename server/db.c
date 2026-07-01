@@ -812,6 +812,14 @@ int db_group_add_member(int gid, int uid) {
     return rc;
 }
 
+int db_group_leave(int gid, int uid) {
+    char sql[160];
+    snprintf(sql, sizeof(sql),
+        "DELETE FROM group_members WHERE group_id=%d AND user_id=%d", gid, uid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
 int db_group_notice_get(int gid, char *out, int outsz) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT notice FROM chat_groups WHERE id=%d", gid);

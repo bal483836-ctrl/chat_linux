@@ -41,6 +41,7 @@ enum MsgType {
     MSG_GROUP_JOIN_NOTIFY     = 35,  /* 服务器->群主: status=reqid, group_id  */
     MSG_GROUP_JOIN_REPLY      = 36,  /* 群主->服务器: status=reqid, group_id=1/0 */
     MSG_GROUP_JOIN_REQ_LIST   = 37,  /* "reqid\tgid\tgname\tfrom\ttime"       */
+    MSG_GROUP_LEAVE           = 38,  /* 退出群聊: group_id; 群主不可退出       */
     MSG_GROUP_INVITE          = 39,  /* 成员邀请入群: group_id, body=多行账号 */
 
     MSG_HISTORY_PRIV   = 40,  /* 拉取私聊历史 to_name=对方                   */
