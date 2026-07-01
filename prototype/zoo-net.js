@@ -92,7 +92,11 @@ class ZooNet {
 
   /* ---- 个人资料 ---- */
   profileGet(acc){ this.send({type:T.PROFILE_GET, to_name: acc?String(acc):''}); }
-  profileSet(nick, birth){ return this._req({type:T.PROFILE_SET, body:(nick||'')+'\n'+(birth||'')}); }
+  /* colorIdx: 选择的动物形象下标(>=0); 经 status=idx+1 持久化到服务器,
+   * 让好友端看到与本人一致的头像. 省略时不改动色号. */
+  profileSet(nick, birth, colorIdx){ return this._req({type:T.PROFILE_SET,
+    status:(typeof colorIdx==='number'&&colorIdx>=0)?(colorIdx+1):0,
+    body:(nick||'')+'\n'+(birth||'')}); }
 
   /* ---- 头像 (真实二进制字节, 走 bodyB64 保证不被当文本 UTF-8 解码破坏) ---- */
   avatarUpload(base64Png, byteLen){ return this._req({type:T.AVATAR_UPLOAD, bodyB64:base64Png, status:Number(byteLen)||0}); }

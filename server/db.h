@@ -47,6 +47,7 @@ int  db_group_set_notice(int gid, const char *notice);             /* 设群公�
 /* ===== 个人资料 ===== */
 int  db_set_birthday(int uid, const char *birth);                  /* birth 空=置 NULL */
 int  db_set_nick    (int uid, const char *nick);
+int  db_set_avatar_color(int uid, int color);                      /* 头像动物下标, 好友端据此还原一致头像 */
 /* 取资料: nick/birth 填字符串, *color 填头像色; 0/-1 */
 int  db_profile_get (int uid, char *nick, int nsz, char *birth, int bsz, int *color);
 

@@ -566,6 +566,9 @@ const ANIMALS=[
 ];
 function mk(id,name,key,extra){const a=ANIMALS.find(x=>x.key===key)||ANIMALS[0];
   return Object.assign({id,name,color:'c-'+key,animal:key,img:ASSET(key),emoji:a.emoji},extra||{});}
+/* 动物形象 -> 下标. 与服务器 avatar_color / colorAnimal() 互逆,
+ * 用来把"我选择的动物"持久化到服务器, 保证好友端看到的头像和我一致. */
+function animalIndex(key){const i=ANIMALS.findIndex(a=>a.key===key);return i<0?0:i;}
 
 /* ===== 数据 ===== */
 const ME=mk('me','橘座大魔王','cat',{zoo:'88_meow',birth:'2001-03-15'});
@@ -671,7 +674,8 @@ async function doLogin(){const acc=document.getElementById('lgEmail').value.trim
     if(r.status!==ZooNet.RS.OK){document.getElementById('lgErr').textContent=r.body||'账号或密码错误';return;}
     const parts=(r.body||'').split('\n');myAccount=parts[0];ME.zoo=parts[0];if(parts[1])ME.name=parts[1];
     restoreMyAvatar(myAccount);saveRemember(acc,p);
-    liveResetData();refreshMe();renderChatList();renderContacts();updatePip();net.avatarGet(myAccount);enterApp();return;}
+    liveResetData();refreshMe();renderChatList();renderContacts();updatePip();
+    net.avatarGet(myAccount);net.profileGet(myAccount);enterApp();return;}
   saveRemember(acc,p);enterApp();}
 async function doRegister(){const n=document.getElementById('rgName').value.trim(),e=document.getElementById('rgEmail').value.trim(),
   b=document.getElementById('rgBirth').value,p=document.getElementById('rgPwd').value,p2=document.getElementById('rgPwd2').value;
@@ -686,6 +690,8 @@ async function doRegister(){const n=document.getElementById('rgName').value.trim
     myAccount=(r.body||'').trim();const lr=await net.login(myAccount,p);
     ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);ME.emoji=(ANIMALS.find(a=>a.key===regPick)||{}).emoji;ME.zoo=r.body;ME.birth=b||ME.birth;
     if(lr.status===ZooNet.RS.OK){const pp=(lr.body||'').split('\n');ME.name=pp[1]||n;}
+    /* 把选择的动物形象 + 生日持久化到服务器, 好友端才能看到与我一致的头像 */
+    net.profileSet(ME.name,ME.birth||'',animalIndex(regPick));
     saveMyAvatar();saveRemember(e,p);
     liveResetData();refreshMe();renderChatList();renderContacts();updatePip();toast('账号 '+r.body+' 创建成功 🎉');enterApp();return;}
   ME.name=n;ME.birth=b||ME.birth;ME.animal=regPick;ME.color='c-'+regPick;ME.img=ASSET(regPick);
@@ -741,7 +747,11 @@ function renderContacts(filter=''){const box=document.getElementById('contactLis
   box.innerHTML=html;}
 function filterContacts(v){renderContacts(v.trim());}
 function updateReqBadge(){const p=document.getElementById('reqPip');if(!p)return;if(pendingReqs.length){p.textContent=pendingReqs.length;p.classList.add('show');}else p.classList.remove('show');}
-function acceptReq(reqid){if(LIVE&&online&&net)net.friendReqReply(reqid,true);pendingReqs=pendingReqs.filter(r=>r.reqid!==reqid);renderContacts();updateReqBadge();toast('已同意 ✅');}
+function acceptReq(reqid){if(LIVE&&online&&net){net.friendReqReply(reqid,true);
+    /* 服务端已会主动把最新好友列表推给双方; 这里再显式拉一次兜底,
+     * 确保同意方本地一定刷新出对方(避免任何一端漏更新) */
+    setTimeout(()=>{if(LIVE&&online&&net)net.friendList();},300);}
+  pendingReqs=pendingReqs.filter(r=>r.reqid!==reqid);renderContacts();updateReqBadge();toast('已同意 ✅');}
 function rejectReq(reqid){if(LIVE&&online&&net)net.friendReqReply(reqid,false);pendingReqs=pendingReqs.filter(r=>r.reqid!==reqid);renderContacts();updateReqBadge();toast('已拒绝');}
 function addPendingReq(m){const reqid=m.status;if(pendingReqs.some(r=>r.reqid===reqid))return;
   pendingReqs.unshift({reqid,account:m.from_name,nick:m.from_nick||m.from_name,color:0,hello:m.body});
@@ -949,7 +959,7 @@ function renderProfile(u){const isMe=u.id==='me';const inner=document.getElement
               :`<button class="pill green sm" style="width:100%" onclick="msgFromProfile('${u.id}')">💬 发消息</button>`}</div>`;
   inner.innerHTML=panelHead(isMe?'我的资料':'个人资料')+`<div class="info-body">${hero}${fields}</div>`;}
 function saveProfile(){const n=document.getElementById('pfName').value.trim();const b=document.getElementById('pfBirth').value;if(n)ME.name=n;ME.birth=b;profileEdit=false;
-  if(LIVE&&online)net.profileSet(ME.name,ME.birth||'');refreshMe();renderChatList();if(currentChat)renderMessages();renderProfile(ME);toast('资料已保存 ✅');}
+  if(LIVE&&online)net.profileSet(ME.name,ME.birth||'',animalIndex(ME.animal));refreshMe();renderChatList();if(currentChat)renderMessages();renderProfile(ME);toast('资料已保存 ✅');}
 function msgFromProfile(id){const f=userById(id);closeInfo();if(f&&f.id!=='me')openSingleChatByFriend(f);}
 
 /* --- 邀请进群(页内) --- */
@@ -1141,6 +1151,10 @@ function bindLive(){if(liveBound)return;liveBound=true;const T=ZooNet.T;
   net.on(T.GROUP_NOTICE,m=>{const cid='g'+m.group_id;groupNotice[cid]=m.body;
     if(currentChat===cid&&panelStack.length&&curPanel().view==='info')renderPanel();});
   net.on(T.PROFILE_DATA,m=>{const p=ZooNet.parseProfile(m.body);liveProfiles[m.from_name]=p;
+    /* 本人资料: 换设备登录时 localStorage 为空, 用服务器保存的动物色号还原自己的头像,
+     * 保证自己看到的头像与好友端看到的一致(有自定义上传图时以图为准) */
+    if(m.from_name===myAccount){if(!ME.customImg){const key=colorAnimal(p.color);ME.animal=key;ME.color='c-'+key;ME.img=ASSET(key);ME.emoji=(ANIMALS.find(a=>a.key===key)||{}).emoji;}
+      ME.birth=p.birth||ME.birth;refreshMe();rerenderAvatarViews();return;}
     const cp=panelStack.length?curPanel():null;
     if(cp&&cp.view==='profile'&&cp.data.user&&cp.data.user.id===m.from_name){cp.data.user.birth=p.birth;cp.data.user.name=cp.data.user.name||p.nick;renderPanel();}
     if(profilePageUser&&profilePageUser.id===m.from_name&&!document.getElementById('pageProfile').classList.contains('hidden')){profilePageUser.birth=p.birth;renderProfilePage(profilePageUser);}});

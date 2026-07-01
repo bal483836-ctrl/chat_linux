@@ -420,6 +420,9 @@ void *client_thread(void *arg) {
             }
             if (nick[0]) { db_set_nick(sess.uid, nick); strncpy(sess.nick, nick, MAX_NAME_LEN - 1); }
             db_set_birthday(sess.uid, birth);
+            /* status = 头像动物下标+1 (0=不修改). 持久化选择的动物形象,
+             * 好友端 colorAnimal(avatar_color) 才能还原出与本人一致的头像. */
+            if (m.status > 0) db_set_avatar_color(sess.uid, (int)m.status - 1);
             resp(fd, RS_OK, "profile updated");
             break;
         }

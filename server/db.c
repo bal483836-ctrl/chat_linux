@@ -864,6 +864,16 @@ int db_set_nick(int uid, const char *nick) {
     return rc;
 }
 
+/* 设置头像色号(=客户端选择的动物形象下标). 让好友端 colorAnimal(color) 能还原
+ * 出与本人一致的动物头像; 否则注册时 avatar_color 只是昵称 hash, 两端不一致. */
+int db_set_avatar_color(int uid, int color) {
+    if (color < 0) return -1;
+    char sql[128];
+    snprintf(sql, sizeof(sql), "UPDATE users SET avatar_color=%d WHERE id=%d", color, uid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    return rc;
+}
+
 int db_profile_get(int uid, char *nick, int nsz, char *birth, int bsz, int *color) {
     char sql[200];
     snprintf(sql, sizeof(sql),
