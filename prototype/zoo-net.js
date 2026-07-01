@@ -98,8 +98,9 @@ class ZooNet {
     status:(typeof colorIdx==='number'&&colorIdx>=0)?(colorIdx+1):0,
     body:(nick||'')+'\n'+(birth||'')}); }
 
-  /* ---- 头像 (真实二进制字节, 走 bodyB64 保证不被当文本 UTF-8 解码破坏) ---- */
-  avatarUpload(base64Png, byteLen){ return this._req({type:T.AVATAR_UPLOAD, bodyB64:base64Png, status:Number(byteLen)||0}); }
+  /* ---- 头像 (真实二进制字节, 走 bodyB64 保证不被当文本 UTF-8 解码破坏) ----
+   * key 省略=本人头像; 传 "g<群号>" 则为群头像(同步给全体成员) */
+  avatarUpload(base64Img, byteLen, key){ return this._req({type:T.AVATAR_UPLOAD, to_name:key?String(key):'', bodyB64:base64Img, status:Number(byteLen)||0}); }
   avatarGet(acc){ this.send({type:T.AVATAR_GET, to_name:String(acc)}); }
 
   /* ---- 文件/图片传输 (中继, 按分片发送) ----

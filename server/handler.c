@@ -45,6 +45,13 @@ static int split_userpass(const char *body, char *u, char *p) {
 
 static int is_user_online(int uid) { return online_get_fd_by_id(uid) >= 0; }
 
+/* 头像 key 是否为群头像("g"+纯数字, 如 "g5"). 顺带防路径穿越. */
+static int avatar_group_key(const char *key) {
+    if (!key || key[0] != 'g' || !key[1]) return 0;
+    for (const char *p = key + 1; *p; ++p) if (*p < '0' || *p > '9') return 0;
+    return 1;
+}
+
 /* 通知好友: 上下线广播.
  * 我们要给那些把我加为好友的人推 NOTIFY. friend_list 的第一列是账号. */
 static void notify_friends(int uid, const char *account, const char *nick, int online) {
@@ -614,7 +621,13 @@ void *client_thread(void *arg) {
             mkdir("data", 0755);
             mkdir("data/avatars", 0755);
             char path[128];
-            snprintf(path, sizeof(path), "data/avatars/%d.png", sess.uid);
+            if (avatar_group_key(m.to_name)) {
+                int gid = atoi(m.to_name + 1);
+                if (!db_group_is_member(gid, sess.uid)) { resp(fd, RS_FAIL, "你不是该群成员"); break; }
+                snprintf(path, sizeof(path), "data/avatars/g%d.png", gid);
+            } else {
+                snprintf(path, sizeof(path), "data/avatars/%d.png", sess.uid);
+            }
             FILE *fp = fopen(path, "wb");
             if (!fp) { resp(fd, RS_FAIL, "保存失败"); break; }
             fwrite(m.body, 1, sz, fp);
@@ -623,13 +636,17 @@ void *client_thread(void *arg) {
             break;
         }
         case MSG_AVATAR_GET: {
-            int uid = db_user_id_by_account(m.to_name);
             Message o; memset(&o, 0, sizeof(o));
             o.type = MSG_AVATAR_DATA;
             strncpy(o.from_name, m.to_name, MAX_NAME_LEN - 1);
-            if (uid > 0) {
-                char path[128];
-                snprintf(path, sizeof(path), "data/avatars/%d.png", uid);
+            char path[128]; int ok = 0;
+            if (avatar_group_key(m.to_name)) {
+                snprintf(path, sizeof(path), "data/avatars/g%d.png", atoi(m.to_name + 1)); ok = 1;
+            } else {
+                int uid = db_user_id_by_account(m.to_name);
+                if (uid > 0) { snprintf(path, sizeof(path), "data/avatars/%d.png", uid); ok = 1; }
+            }
+            if (ok) {
                 FILE *fp = fopen(path, "rb");
                 if (fp) {
                     size_t n = fread(o.body, 1, MAX_BODY_LEN, fp);

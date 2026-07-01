@@ -218,8 +218,20 @@ body.native .window{width:100vw;height:100vh;border-radius:0;box-shadow:none;}
 .bubble.file-b .fic{width:42px;height:42px;border-radius:12px;background:rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:23px;flex-shrink:0;}
 .msg.them .bubble.file-b .fic{background:rgba(255,150,60,.16);}
 .bubble.img-b{padding:6px;}
-.bubble.img-b .ph{width:180px;height:130px;border-radius:14px;background:linear-gradient(135deg,#ffd36b,#ff7eb3);display:flex;align-items:center;justify-content:center;font-size:44px;overflow:hidden;}
+.bubble.img-b .ph{position:relative;width:180px;height:130px;border-radius:14px;background:linear-gradient(135deg,#ffd36b,#ff7eb3);display:flex;align-items:center;justify-content:center;font-size:44px;overflow:hidden;}
 .bubble.img-b .ph img{width:100%;height:100%;object-fit:cover;}
+/* 传输进度条(文件在名称下方; 图片叠加在缩略图底部) */
+.xfer{margin-top:6px;display:flex;align-items:center;gap:8px;}
+.xfer .xbar{flex:1;height:6px;border-radius:6px;background:rgba(150,90,40,.18);overflow:hidden;}
+.msg.me .xfer .xbar{background:rgba(255,255,255,.4);}
+.xfer .xbar>i{display:block;height:100%;width:0;background:var(--green);border-radius:6px;transition:width .15s ease;}
+.xfer.done .xbar>i{background:var(--green-d);}
+.xfer.fail .xbar>i{background:#e0556a;width:100%!important;}
+.xfer .xlbl{font-size:10px;font-weight:800;opacity:.85;white-space:nowrap;}
+.msg.me .xfer .xlbl{color:#fff;}
+.bubble.img-b .xfer{position:absolute;left:6px;right:6px;bottom:6px;margin:0;background:rgba(0,0,0,.5);padding:4px 8px;border-radius:10px;}
+.bubble.img-b .xfer .xlbl{color:#fff;}
+.bubble.img-b .xfer.done{display:none;}   /* 图片传完后不遮挡画面 */
 .bubble .tsec{font-size:10px;opacity:.72;margin-top:6px;display:none;}
 .bubble.show-time .tsec{display:block;}
 .recalled{align-self:center;font-size:12px;color:var(--ink-soft);background:rgba(255,255,255,.6);padding:5px 14px;border-radius:12px;margin:4px 0;}
@@ -632,8 +644,9 @@ function avHTML(u,size,sq){const k=avKey(u);
    * 用户/ME 对象; 头像缓存必须按真实账号 key, 否则私聊列表/会话头拿不到已同步的头像 */
   const acc=u&&(u.type==='single'?u.friendId:u.id);
   const isMe=acc==='me'||acc===myAccount;
-  const custom=isMe?ME.customImg:(acc&&avatarCache[acc]);
-  if(!isMe&&acc&&avatarCache[acc]===undefined)ensureAvatar(acc);
+  /* 优先级: 本人=ME.customImg; 群/带自带图的对象=u.customImg; 其他=服务器头像缓存 */
+  const custom=isMe?ME.customImg:(u&&u.customImg?u.customImg:(acc&&avatarCache[acc]));
+  if(!isMe&&!(u&&u.customImg)&&acc&&avatarCache[acc]===undefined)ensureAvatar(acc);
   const src=custom?custom:('assets/pa/'+k+'.png');
   const fb=custom?'':('assets/'+k+'.png');
   return `<div class="av av-${size} ${u.color||('c-'+k)}${sq?' av-sq':''}">
@@ -804,8 +817,8 @@ function buildMsg(m,c){if(m.recalled){const r=document.createElement('div');r.cl
   const u=userById(m.from),me=m.from==='me';const row=document.createElement('div');row.className='msg '+(me?'me':'them');row.dataset.id=m.id;
   let inner='';
   if(m.type==='text')inner=esc(m.text);
-  else if(m.type==='file')inner=`<div class="fic">📄</div><div><div style="font-weight:800">${esc(m.text)}</div><div style="font-size:11px;opacity:.7;margin-top:2px">${fmtSize(m.size)}</div></div>`;
-  else if(m.type==='image')inner=`<div class="ph">${m.src?`<img src="${m.src}">`:'🖼️'}</div>`;
+  else if(m.type==='file')inner=`<div class="fic">📄</div><div style="flex:1;min-width:0"><div style="font-weight:800;word-break:break-all">${esc(m.text)}</div><div style="font-size:11px;opacity:.7;margin-top:2px">${fmtSize(m.size)}</div>${xferMarkup(m)}</div>`;
+  else if(m.type==='image')inner=`<div class="ph">${m.src?`<img src="${m.src}">`:'<span style="font-size:44px">🖼️</span>'}${xferMarkup(m)}</div>`;
   const bc='bubble'+(m.type==='file'?' file-b':'')+(m.type==='image'?' img-b':'');
   const showName=(c.type==='group'&&!me);
   row.innerHTML=`${avHTML(u,'sm')}<div class="bubble-wrap">${showName?`<div class="sender">${esc(u.name)}</div>`:''}<div class="${bc}">${inner}<div class="tsec">🕒 ${fmtTime(m.time,'full')}</div></div></div>`;
@@ -1069,23 +1082,36 @@ function clampCrop(){const s=cropState;const w=s.nw*s.base*s.zoom,h=s.nh*s.base*
 function applyCropTransform(){const s=cropState;clampCrop();
   s.img.style.transform=`translate(${s.x}px,${s.y}px) scale(${s.base*s.zoom})`;}
 function closeCrop(){document.getElementById('cropMask').classList.remove('show');cropState=null;}
+/* 生成一张"保证 <=4096B(MAX_BODY_LEN) 单条消息装得下"的头像 base64(JPEG)。
+ * 之前直接上传 64x64 PNG, 照片类头像常常 >4KB 被服务器判为"头像数据非法"而丢弃,
+ * 导致自己能看到、好友却看不到。这里改用 JPEG 并逐级降尺寸/画质直到装得下。 */
+function makeAvatarB64(srcCanvas){
+  const LIMIT=3800; /* 解码后字节上限, 留余量 < 4096 */
+  const sizes=[64,56,48,40,32], quals=[0.82,0.68,0.55,0.42,0.3];
+  for(const sz of sizes){const c=document.createElement('canvas');c.width=c.height=sz;
+    c.getContext('2d').drawImage(srcCanvas,0,0,sz,sz);
+    for(const q of quals){const raw=(c.toDataURL('image/jpeg',q).split(',')[1])||'';
+      const bytes=Math.floor(raw.replace(/=+$/,'').length*3/4);
+      if(bytes>0&&bytes<=LIMIT)return {b64:raw,bytes};}}
+  const c=document.createElement('canvas');c.width=c.height=32;c.getContext('2d').drawImage(srcCanvas,0,0,32,32);
+  const raw=(c.toDataURL('image/jpeg',0.3).split(',')[1])||'';
+  return {b64:raw,bytes:Math.floor(raw.replace(/=+$/,'').length*3/4)};}
+/* 根据 base64 头像内容前缀判断 MIME(兼容旧 PNG 与新 JPEG) */
+function avatarDataUrl(b64){if(!b64)return '';const mime=b64.startsWith('/9j/')?'image/jpeg':(b64.startsWith('iVBOR')?'image/png':'image/jpeg');return 'data:'+mime+';base64,'+b64;}
 function applyCrop(){const s=cropState;if(!s)return;const OUT=256;const cv=document.createElement('canvas');cv.width=OUT;cv.height=OUT;
   const ctx=cv.getContext('2d');const r=OUT/s.S;
   ctx.drawImage(s.img,s.x*r,s.y*r,s.nw*s.base*s.zoom*r,s.nh*s.base*s.zoom*r);
   const data=cv.toDataURL('image/png');
   if(cropTarget==='me'){
     ME.customImg=data;refreshMe();saveMyAvatar();
-    /* 同步到服务器, 好友端才能看到和我这边一致的头像(MSG_AVATAR_UPLOAD 单条消息 <=4096B,
-     * 所以额外渲染一张 64x64 小图上传, 本地大图仍用于自己界面里更清晰的显示) */
-    if(LIVE&&online){
-      const uc=document.createElement('canvas');uc.width=64;uc.height=64;
-      uc.getContext('2d').drawImage(cv,0,0,64,64);
-      const raw=(uc.toDataURL('image/png').split(',')[1])||'';
-      const bytes=Math.floor(raw.replace(/=+$/,'').length*3/4);
-      if(bytes>0)net.avatarUpload(raw,bytes).then(r=>{if(r.status!==ZooNet.RS.OK)toast('头像同步失败，请重试');});
-    }
+    /* 同步到服务器, 好友端才能看到和我这边一致的头像。本地仍用大图更清晰。 */
+    if(LIVE&&online){const {b64,bytes}=makeAvatarB64(cv);
+      if(bytes>0)net.avatarUpload(b64,bytes).then(r=>{if(r.status!==ZooNet.RS.OK)toast('头像同步失败，请重试');else toast('头像已同步给好友 ✅');});}
   }
-  else{const c=chats.find(x=>x.id===cropTarget);if(c)c.customImg=data;}
+  else{const c=chats.find(x=>x.id===cropTarget);if(c){c.customImg=data;
+    /* 群头像同步给其他成员(存到服务器, 以群号作为"账号"key) */
+    if(LIVE&&online&&c.type==='group'&&c.gid){const {b64,bytes}=makeAvatarB64(cv);
+      if(bytes>0)net.avatarUpload(b64,bytes,'g'+c.gid);}}}
   closeCrop();renderChatList();renderContacts();
   if(currentChat){const cc=chats.find(x=>x.id===currentChat);if(cc&&document.getElementById('headAv'))document.getElementById('headAv').innerHTML=avHTML(cc,'md');renderMessages();}
   if(panelStack.length)renderPanel();toast('头像已更新 ✅');}
@@ -1161,14 +1187,28 @@ function bindLive(){if(liveBound)return;liveBound=true;const T=ZooNet.T;
   net.on(T.FRIEND_REQ_NOTIFY,m=>addPendingReq(m));
   net.on(T.FRIEND_REQ_LIST,m=>setPendingReqs(m.body));
   net.on(T.AVATAR_DATA,m=>{const acc=m.from_name;
-    if(acc===myAccount){if(m.status>0)ME.customImg='data:image/png;base64,'+m.bodyB64;refreshMe();rerenderAvatarViews();return;}
-    avatarFetching.delete(acc);avatarCache[acc]=(m.status>0)?('data:image/png;base64,'+m.bodyB64):null;rerenderAvatarViews();});
+    if(acc===myAccount){if(m.status>0)ME.customImg=avatarDataUrl(m.bodyB64);refreshMe();rerenderAvatarViews();return;}
+    avatarFetching.delete(acc);avatarCache[acc]=(m.status>0)?avatarDataUrl(m.bodyB64):null;
+    /* 群头像(acc 形如 g5)拉回后, 同步到对应会话对象, 让本地立即用上 */
+    if(/^g\d+$/.test(acc)){const c=chats.find(x=>x.id===acc);if(c&&avatarCache[acc])c.customImg=avatarCache[acc];}
+    rerenderAvatarViews();});
   net.on(T.USER_SEARCH,m=>renderUserSearchResults(m.body));
-  net.on(T.FILE_BEGIN,m=>{const gid=m.group_id||0;inboundFiles[fileKey(m.from_name,gid)]={
-    from:m.from_name,fromNick:m.from_nick,gid,name:(m.body||'').split('\t')[0]||'file',
-    mime:(m.body||'').split('\t')[1]||'',size:m.status,chunks:[]};});
+  net.on(T.FILE_BEGIN,m=>{const gid=m.group_id||0;const key=fileKey(m.from_name,gid);
+    ensureUser(m.from_name,m.from_nick,0);
+    const name=(m.body||'').split('\t')[0]||'file',mime=(m.body||'').split('\t')[1]||'';
+    let c;
+    if(gid){c=chats.find(x=>x.gid===gid);if(!c){c=Object.assign(mk('g'+gid,'群聊 '+gid,'cat'),{type:'group',gid,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}}
+    else{c=ensureSingleChat(m.from_name,m.from_nick,0);}
+    const msg={id:Date.now()+Math.random(),from:m.from_name,type:isImageFile(name,mime)?'image':'file',
+      text:name,size:m.status,src:null,time:new Date(),_xfer:0,transferring:true};
+    (conversations[c.id]=conversations[c.id]||[]).push(msg);
+    inboundFiles[key]={from:m.from_name,fromNick:m.from_nick,gid,name,mime,size:m.status,chunks:[],received:0,msg,cid:c.id};
+    c.preview=previewOf(msg);c.time=fmtTime(msg.time,'hm');
+    renderChatList();if(currentChat===c.id)renderMessages();});
   net.on(T.FILE_CHUNK,m=>{const gid=m.group_id||0;const st=inboundFiles[fileKey(m.from_name,gid)];
-    if(st&&m.bodyB64)st.chunks.push(b64ToU8(m.bodyB64));});
+    if(st&&m.bodyB64){const u=b64ToU8(m.bodyB64);st.chunks.push(u);st.received+=u.length;
+      st.msg._xfer=st.size?Math.min(99,Math.floor(st.received/st.size*100)):50;
+      if(currentChat===st.cid)updateXfer(st.msg);}});
   net.on(T.FILE_END,m=>{finishInboundFile(fileKey(m.from_name,m.group_id||0));});
   net.on('close',()=>{online=false;liveStatus('连接已断开',false);});}
 function liveResetData(){friends.length=0;strangers.length=0;chats.length=0;pendingReqs=[];updateReqBadge();Object.keys(conversations).forEach(k=>delete conversations[k]);}
@@ -1209,42 +1249,67 @@ function setOnlineState(account,on){const f=friends.find(x=>x.id===account);if(f
 function u8ToB64(u8){let s='';const CH=0x8000;for(let i=0;i<u8.length;i+=CH)s+=String.fromCharCode.apply(null,u8.subarray(i,i+CH));return btoa(s);}
 function b64ToU8(b64){const s=atob(b64);const u=new Uint8Array(s.length);for(let i=0;i<s.length;i++)u[i]=s.charCodeAt(i);return u;}
 
-/* ===== 图片/文件传输(真实收发, 经 FILE_BEGIN/CHUNK/END 中继) ===== */
+/* ===== 图片/文件传输(真实收发, 经 FILE_BEGIN/CHUNK/END 中继, 带进度条) ===== */
 const FILE_MAX_BYTES=6*1024*1024;   /* 单文件上限 6MB, 避免海量小分片拖垮 UI */
 const FILE_CHUNK_RAW=2048;
 let inboundFiles={};
 function fileKey(from,gid){return gid?('g:'+gid):('p:'+from);}
+function isImageFile(name,mime){return /^image\//.test(mime||'')||/\.(png|jpe?g|gif|webp|bmp)$/i.test(name||'');}
+
+/* --- 传输进度 UI --- */
+function xferState(m){if(m._xfer==null)return null;const pct=Math.max(0,Math.min(100,Math.round(m._xfer)));
+  return {pct,done:pct>=100&&!m._xferFail,fail:!!m._xferFail};}
+function xferLabel(m){const s=xferState(m);if(!s)return '';if(s.fail)return '传输失败 ✕';
+  if(s.done)return (m.from==='me'?'已发送 ✓':'已接收 ✓');return (m.from==='me'?'发送中 ':'接收中 ')+s.pct+'%';}
+function xferMarkup(m){const s=xferState(m);if(!s)return '';
+  return `<div class="xfer ${s.fail?'fail':(s.done?'done':'')}"><div class="xbar"><i style="width:${s.pct}%"></i></div><span class="xlbl">${xferLabel(m)}</span></div>`;}
+/* 只更新已存在气泡里的进度条(避免每个分片都整表重绘) */
+function updateXfer(m){const box=document.getElementById('msgs');if(!box)return false;
+  const row=box.querySelector('.msg[data-id="'+m.id+'"]');if(!row)return false;
+  const x=row.querySelector('.xfer');if(!x)return false;const s=xferState(m);if(!s)return true;
+  x.className='xfer '+(s.fail?'fail':(s.done?'done':''));
+  const bar=x.querySelector('.xbar>i');if(bar)bar.style.width=s.pct+'%';
+  const lbl=x.querySelector('.xlbl');if(lbl)lbl.textContent=xferLabel(m);return true;}
+
 function finishInboundFile(key){const st=inboundFiles[key];if(!st)return;delete inboundFiles[key];
   const blob=new Blob(st.chunks,{type:st.mime||'application/octet-stream'});
-  const url=URL.createObjectURL(blob);
-  const isImg=/^image\//.test(st.mime||'')||/\.(png|jpe?g|gif|webp|bmp)$/i.test(st.name||'');
-  ensureUser(st.from,st.fromNick,0);
-  let c;
-  if(st.gid){c=chats.find(x=>x.gid===st.gid);
-    if(!c){c=Object.assign(mk('g'+st.gid,'群聊 '+st.gid,'cat'),{type:'group',gid:st.gid,sub:'群聊',time:'',preview:'',unread:0,members:[]});chats.push(c);conversations[c.id]=[];}}
-  else{c=ensureSingleChat(st.from,st.fromNick,0);}
-  const msg={id:Date.now()+Math.random(),from:st.from,type:isImg?'image':'file',text:st.name,size:st.size,src:url,time:new Date()};
-  (conversations[c.id]=conversations[c.id]||[]).push(msg);
-  c.preview=previewOf(msg);c.time=fmtTime(msg.time,'hm');
-  if(currentChat!==c.id&&!c.muted)c.unread=(c.unread||0)+1;
-  renderChatList();updatePip();if(currentChat===c.id)renderMessages();}
-/* 真正发送一个本地文件(图片或普通文件): LIVE 时经协议分片发给对方/群里所有人;
- * 否则(离线演示)仅在本地显示自己发的消息。无论在线/离线都不再触发任何假的自动回复。 */
+  const msg=st.msg;msg.src=URL.createObjectURL(blob);msg._xfer=100;msg.transferring=false;
+  const c=chats.find(x=>x.id===st.cid);
+  if(c){c.preview=previewOf(msg);c.time=fmtTime(new Date(),'hm');
+    if(currentChat!==c.id&&!c.muted)c.unread=(c.unread||0)+1;}
+  renderChatList();updatePip();
+  if(currentChat===st.cid)renderMessages();  /* 收齐后整表重绘: 显示图片并绑定点击放大 */
+}
+/* 真正发送一个本地文件(图片或普通文件): LIVE 时经协议分片发给对方/群里所有人, 显示发送进度;
+ * 否则(离线演示)仅在本地显示。无论在线/离线都不触发任何假的自动回复。 */
 async function sendLocalFile(file){
   if(!currentChat||!file)return;const c=chats.find(x=>x.id===currentChat);if(!c)return;
   const isImg=/^image\//.test(file.type||'');
   if(!(LIVE&&online)){
-    pushMsg(isImg?{from:'me',type:'image',src:URL.createObjectURL(file),text:file.name}:{from:'me',type:'file',text:file.name,size:file.size});
+    pushMsg(isImg?{from:'me',type:'image',src:URL.createObjectURL(file),text:file.name,_xfer:100}:{from:'me',type:'file',text:file.name,size:file.size,_xfer:100});
     return;
   }
   if(file.size>FILE_MAX_BYTES){toast('文件过大, 最大支持 '+fmtSize(FILE_MAX_BYTES)+' 🙅');return;}
   const isGroup=c.type==='group',target=isGroup?c.gid:c.friendId;
-  const buf=await file.arrayBuffer();const bytes=new Uint8Array(buf);
-  net.fileBegin(target,isGroup,file.name,file.type||'',bytes.length);
-  for(let off=0;off<bytes.length;off+=FILE_CHUNK_RAW)net.fileChunk(target,isGroup,u8ToB64(bytes.subarray(off,off+FILE_CHUNK_RAW)));
-  net.fileEnd(target,isGroup);
   const url=URL.createObjectURL(file);
-  pushMsg(isImg?{from:'me',type:'image',src:url,text:file.name}:{from:'me',type:'file',text:file.name,size:file.size,src:url});
+  const msg=isImg?{from:'me',type:'image',src:url,text:file.name,size:file.size,_xfer:0,transferring:true}
+                 :{from:'me',type:'file',text:file.name,size:file.size,src:url,_xfer:0,transferring:true};
+  pushMsg(msg);  /* 立即出现气泡 + 0% 进度条 */
+  try{
+    const buf=await file.arrayBuffer();const bytes=new Uint8Array(buf);
+    net.fileBegin(target,isGroup,file.name,file.type||'',bytes.length);
+    let since=0;
+    for(let off=0;off<bytes.length;off+=FILE_CHUNK_RAW){
+      net.fileChunk(target,isGroup,u8ToB64(bytes.subarray(off,off+FILE_CHUNK_RAW)));
+      const sent=Math.min(bytes.length,off+FILE_CHUNK_RAW);
+      msg._xfer=bytes.length?Math.min(99,Math.floor(sent/bytes.length*100)):100;
+      /* 每发若干片让出主线程: 既能刷新进度条, 也避免大文件卡死 UI/丢片 */
+      if(++since>=12){since=0;if(currentChat===c.id)updateXfer(msg);await new Promise(r=>setTimeout(r,0));}
+    }
+    net.fileEnd(target,isGroup);
+    msg._xfer=100;msg.transferring=false;if(currentChat===c.id&&!updateXfer(msg))renderMessages();else if(currentChat===c.id)updateXfer(msg);
+    c.preview=previewOf(msg);c.time='刚刚';renderChatList();
+  }catch(e){msg._xferFail=true;msg.transferring=false;if(currentChat===c.id)updateXfer(msg);toast('发送失败，请重试');}
 }
 
 /* ===== 加好友搜索结果(真实: 服务器按账号/昵称查, 带头像+昵称) ===== */
