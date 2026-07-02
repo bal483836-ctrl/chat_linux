@@ -115,11 +115,12 @@ class ZooNet {
     if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
     this.send(o);
   }
-  /* 结束上传: 等服务器落库应答(body=fileid) */
+  /* 结束上传(不等应答, 避免服务器不回时卡死/污染应答队列; fileid 由服务器回推的
+   * 文件消息补上) */
   fileEnd(target, isGroup){
     const o = {type:T.FILE_END};
     if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
-    return this._req(o);
+    this.send(o);
   }
   /* 下载文件: fileid 放 status, 服务端回 FILE_BEGIN/CHUNK/END(group_id=fileid) */
   fileGet(fileid){ this.send({type:T.FILE_GET, status:Number(fileid)||0}); }

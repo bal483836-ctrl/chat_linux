@@ -178,6 +178,9 @@ static void dispatch_saved(Session *s, int is_group, int target, int msgid, cons
         if (online_push(target, &out) < 0 && msgid > 0)
             db_offline_put(target, msgid);
     }
+    /* 文件消息额外回推给发送者自己一份: 让客户端给"本地乐观显示的那条"补上 fileid,
+     * 从而历史重拉时能按 fileid 去重(不影响文本消息, 文本不走此函数)。 */
+    if (memcmp(out.body, FILE_TAG, 6) == 0) online_push(s->uid, &out);
 }
 
 /* push_history: rows[i].from_name 已经是发送者昵称, from_id 给我们账号. */
@@ -548,9 +551,7 @@ void *client_thread(void *arg) {
                 dispatch_saved(&sess, sess.up_is_group, sess.up_target, msgid, content);
             }
             free(sess.up_buf); sess.up_buf = NULL; sess.up_len = sess.up_cap = 0;
-            /* 回 fileid 给发送方, 让它给自己的消息打上 fileid(历史去重用) */
-            if (msgid > 0) { char t[16]; snprintf(t, sizeof(t), "%d", msgid); resp(fd, RS_OK, t); }
-            else resp(fd, RS_FAIL, "保存失败");
+            /* 不回 RESPONSE(避免污染客户端应答队列); fileid 通过上面回推的文件消息补给发送方 */
             break;
         }
         /* 下载: 客户端给 fileid(status), 服务器读盘分片发回(group_id 复用为 fileid) */

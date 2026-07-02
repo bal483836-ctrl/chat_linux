@@ -1239,6 +1239,9 @@ function incomingMsg(kind,m){ensureUser(m.from_name,m.from_nick,0);let c;
     const p=m.body.slice(FILE_MARK.length).split('\t');
     const fileid=+p[0],name=p[1]||'file',mime=p[2]||'',size=+p[3]||0;
     if(fileid&&(conversations[c.id]||[]).some(x=>x.fileid===fileid)){return;}  /* 历史重拉去重 */
+    /* 自己发的文件: 服务器回推用于补 fileid, 匹配本地乐观那条即可, 不重复新建/下载 */
+    if(from==='me'){const local=(conversations[c.id]||[]).find(x=>x.from==='me'&&!x.fileid&&x.text===name&&x.src);
+      if(local){local.fileid=fileid;return;}}
     msg={id:Date.now()+Math.random(),from,type:isImageFile(name,mime)?'image':'file',
       text:name,size,fileid,src:null,time:isNaN(t)?new Date():t,_xfer:0,transferring:true};
     (conversations[c.id]=conversations[c.id]||[]).push(msg);
@@ -1314,9 +1317,9 @@ async function sendLocalFile(file){
       /* 每发若干片让出主线程: 既能刷新进度条, 也避免大文件卡死 UI/丢片 */
       if(++since>=12){since=0;if(currentChat===c.id)updateXfer(msg);await new Promise(r=>setTimeout(r,0));}
     }
-    const endResp=await net.fileEnd(target,isGroup);
-    /* 服务器把文件落库后回 fileid; 记到自己这条消息, 便于历史重拉去重 */
-    if(endResp&&endResp.body){const fid=+endResp.body;if(fid)msg.fileid=fid;}
+    net.fileEnd(target,isGroup);
+    /* 立即乐观标记"已发送"(不等服务器应答, 避免卡死); 服务器随后会回推一条
+     * 文件消息给自己, 用来给这条补上 fileid(历史去重用) */
     msg._xfer=100;msg.transferring=false;if(currentChat===c.id&&!updateXfer(msg))renderMessages();else if(currentChat===c.id)updateXfer(msg);
     c.preview=previewOf(msg);c.time='刚刚';renderChatList();
   }catch(e){msg._xferFail=true;msg.transferring=false;if(currentChat===c.id)updateXfer(msg);toast('发送失败，请重试');}
