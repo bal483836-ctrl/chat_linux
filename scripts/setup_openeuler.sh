@@ -26,7 +26,15 @@ DB_NAME=${CHAT_DB_NAME:-chat_linux}
 echo "[1/5] 安装依赖 (dnf) ..."
 sudo dnf groupinstall -y "Development Tools"
 # 服务器依赖
-sudo dnf install -y openssl-devel mariadb-server mariadb mariadb-connector-c-devel
+sudo dnf install -y openssl-devel mariadb-server mariadb
+# MySQL/MariaDB 开发库(mysql.h + 客户端库): 系统若已有(mysql-devel 或
+# mariadb-connector-c-devel)就跳过, 避免二者都提供 mysql_config/头文件导致的
+# "Transaction test error: file ... conflicts" 冲突。
+if command -v mysql_config >/dev/null 2>&1 || [ -e /usr/include/mysql/mysql.h ] || [ -e /usr/include/mariadb/mysql.h ]; then
+  echo "    已检测到 MySQL/MariaDB 开发库, 跳过安装(避免文件冲突)"
+else
+  sudo dnf install -y mariadb-connector-c-devel || sudo dnf install -y mysql-devel
+fi
 # 客户端依赖 (GTK3 + WebKitGTK + cJSON); webkit 包名各版本不同, 逐个尝试
 sudo dnf install -y gtk3-devel cjson-devel
 sudo dnf install -y webkit2gtk3-devel \
@@ -64,8 +72,18 @@ fi
 
 echo "[5/5] 编译 服务器 + 桌面客户端 ..."
 make clean >/dev/null 2>&1 || true
-# 服务器: openEuler 用 MariaDB, 链接库名是 mariadb
-make SRV_LD="-lpthread -lmariadb -lssl -lcrypto" server
+# 探测 MySQL 客户端库名: mysql-devel 提供 -lmysqlclient; mariadb-connector-c-devel
+# 提供 -lmariadb。谁能链上用谁, 避免写死 -lmariadb 在只有 mysql-devel 的机器上失败。
+if echo 'int main(void){return 0;}' | cc -x c - -lmysqlclient -o /tmp/_zoolibtest 2>/dev/null; then
+  SQL_LIB="-lmysqlclient"
+elif echo 'int main(void){return 0;}' | cc -x c - -lmariadb -o /tmp/_zoolibtest 2>/dev/null; then
+  SQL_LIB="-lmariadb"
+else
+  SQL_LIB="-lmysqlclient"
+fi
+rm -f /tmp/_zoolibtest
+echo "    MySQL 链接库: $SQL_LIB"
+make SRV_LD="-lpthread $SQL_LIB -lssl -lcrypto" server
 # 客户端: C + WebKitGTK, Makefile 自动探测 webkit2gtk-4.1/4.0
 make client
 
