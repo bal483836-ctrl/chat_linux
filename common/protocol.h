@@ -31,6 +31,7 @@ enum MsgType {
     MSG_FRIEND_REQ_NOTIFY = 26,  /* 服务器->目标: status=reqid, from_name     */
     MSG_FRIEND_REQ_REPLY  = 27,  /* 目标->服务器: status=reqid, group_id=1/0  */
     MSG_FRIEND_REQ_LIST   = 28,  /* 拉取待处理: "reqid\tfrom\ttime\thello"    */
+    MSG_FRIEND_REMARK     = 29,  /* 设置好友备注: to_name=对方, body=备注     */
 
     MSG_GROUP_CREATE   = 30,  /* body=群名                                   */
     MSG_GROUP_JOIN     = 31,  /* (兼容) 直接加群                              */
@@ -40,14 +41,24 @@ enum MsgType {
     MSG_GROUP_JOIN_NOTIFY     = 35,  /* 服务器->群主: status=reqid, group_id  */
     MSG_GROUP_JOIN_REPLY      = 36,  /* 群主->服务器: status=reqid, group_id=1/0 */
     MSG_GROUP_JOIN_REQ_LIST   = 37,  /* "reqid\tgid\tgname\tfrom\ttime"       */
+    MSG_GROUP_LEAVE           = 38,  /* 退出群聊: group_id; 群主不可退出       */
+    MSG_GROUP_INVITE          = 39,  /* 成员邀请入群: group_id, body=多行账号 */
 
     MSG_HISTORY_PRIV   = 40,  /* 拉取私聊历史 to_name=对方                   */
     MSG_HISTORY_GROUP  = 41,  /* 拉取群聊历史 group_id                       */
     MSG_OFFLINE_PULL   = 42,  /* 登录后服务器主动推送                         */
 
-    MSG_FILE_BEGIN     = 50,  /* body=文件名, status=总字节数                */
+    /* ===== 文件/图片传输 =====
+     * 上行(客户端->服务器上传): FILE_BEGIN(to_name=对方 或 group_id=群号,
+     *   body="文件名\tMIME", status=总字节数) -> 多个 FILE_CHUNK(body=分片) -> FILE_END。
+     *   服务器把分片重组落盘 data/files/<fileid>, 并在 messages 表存一条"文件消息"
+     *   (content 以 \x01FILE\t 标记), 走和文本一样的在线推送/离线入队/历史通路。
+     * 下行(服务器->客户端下载响应): 同样用 FILE_BEGIN/CHUNK/END, 但 group_id 复用为
+     *   fileid, from_name=原发送者账号, 供客户端按 fileid 关联占位消息并组装。*/
+    MSG_FILE_BEGIN     = 50,  /* body="文件名\tMIME", status=总字节数           */
     MSG_FILE_CHUNK     = 51,  /* body=二进制分片                              */
     MSG_FILE_END       = 52,
+    MSG_FILE_GET       = 53,  /* 客户端请求下载: status=fileid; 服务端回 FILE_BEGIN.. */
 
     MSG_NOTIFY_ONLINE  = 60,  /* 服务器->客户端: 好友上线                    */
     MSG_NOTIFY_OFFLINE = 61,
@@ -73,6 +84,14 @@ enum MsgType {
      *   "msg_id\ttime\tfrom_nick\tkind\tpeer\tsnippet"
      * 其中 kind 0=私聊 1=群聊; peer 私聊填对方账号、群聊填群号. */
     MSG_MSG_SEARCH     = 90,
+
+    /* ===== 群公告 / 个人资料 (Web 原型新增功能) ===== */
+    MSG_GROUP_NOTICE   = 100, /* group_id; body 非空=群主设置, 否则查询;
+                              * 服务端回同 type, group_id, body=当前公告      */
+    MSG_PROFILE_GET    = 101, /* to_name=账号(空=自己); 回 MSG_PROFILE_DATA   */
+    MSG_PROFILE_SET    = 102, /* 更新自己: body="昵称\n出生日期(YYYY-MM-DD)"  */
+    MSG_PROFILE_DATA   = 103, /* 回应: from_name=账号,
+                              * body="昵称\t出生日期\tavatar_color\tonline"   */
 };
 
 /* 应答状态码.

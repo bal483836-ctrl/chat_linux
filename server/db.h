@@ -10,8 +10,10 @@ void db_close(void);
 /* 用户.
  * 账号 = 100000 + id, 客户端看到的字符串 "100001" 直接代表 id=1. */
 #define ACCOUNT_BASE  100000
-int  db_register(const char *nickname, const char *pass);          /* 返回 id 或 -错误码 */
+int  db_register(const char *nickname, const char *pass, const char *email); /* 返回 id 或 -错误码 */
 int  db_login_by_id(int user_id, const char *pass);                /* 返回 user_id 或 -错误码 */
+int  db_login_by_email(const char *email, const char *pass);       /* 返回 user_id 或 -错误码 */
+int  db_email_exists(const char *email);                           /* 1/0 */
 int  db_user_id_by_account(const char *account);                   /* 字符串→id, 错误返回 -1 */
 int  db_user_id_by_nick(const char *nick);                         /* 取昵称第一个匹配的 id */
 int  db_get_nick (int user_id, char *out, int outsz);              /* 0/-1 */
@@ -24,18 +26,35 @@ int  db_friend_del  (int uid, int fid);
 int  db_black_set   (int uid, int fid, int black);                 /* 0=普通,1=拉黑 */
 int  db_is_friend   (int uid, int fid);                            /* 1/0 */
 int  db_is_black    (int uid, int fid);                            /* 1/0 */
-/* 把好友列表填进 body: "name\tonline\tblack\n..." . *online_q 须传入 fn 查询在线状态 */
+/* 把好友列表填进 body:
+ * "account\tnick\tcolor\tonline\tblack\tremark\n..." . is_online 查询在线状态 */
 int  db_friend_list (int uid, char *out, int outsz,
                      int (*is_online)(int user_id));
+/* 设置好友备注 */
+int  db_friend_set_remark(int uid, int fid, const char *remark);
 
 /* 群组 */
 int  db_group_create(int owner_id, const char *name);              /* 返回 gid */
 int  db_group_join  (int gid, int uid);
 int  db_group_list_for_user(int uid, char *out, int outsz);
 int  db_group_members(int gid, int *ids, int max);                 /* 返回个数 */
+int  db_group_is_member(int gid, int uid);                         /* 1/0 */
+int  db_group_add_member(int gid, int uid);                        /* INSERT IGNORE, 0/-1 */
+int  db_group_leave(int gid, int uid);                             /* 退出群(删除成员行), 0/-1 */
+int  db_group_notice_get(int gid, char *out, int outsz);           /* 取群公告, 0/-1 */
+int  db_group_set_notice(int gid, const char *notice);             /* 设群公告, 0/-1 */
+
+/* ===== 个人资料 ===== */
+int  db_set_birthday(int uid, const char *birth);                  /* birth 空=置 NULL */
+int  db_set_nick    (int uid, const char *nick);
+int  db_set_avatar_color(int uid, int color);                      /* 头像动物下标, 好友端据此还原一致头像 */
+/* 取资料: nick/birth 填字符串, *color 填头像色; 0/-1 */
+int  db_profile_get (int uid, char *nick, int nsz, char *birth, int bsz, int *color);
 
 /* 消息 */
 int  db_save_msg   (int from, int target, int type, const char *content); /* 返回 msg_id */
+int  db_update_msg_content(int msgid, const char *content);               /* 回填 content, 0/-1 */
+int  db_msg_get    (int msgid, int *from_id, char *content, int csz);     /* 取发送者/内容, 0/-1 */
 int  db_offline_put(int user_id, int msg_id);
 /* 取出离线消息, 填到 out 数组(每个含 from/target/type/body/time), 返回个数; 之后会删除. */
 typedef struct {
