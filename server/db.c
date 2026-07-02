@@ -371,6 +371,37 @@ int db_save_msg(int from, int target, int type, const char *content) {
     return id;
 }
 
+/* 更新一条消息的 content(用于文件消息: 先存占位拿到 msgid, 再回填带 fileid 的标记). */
+int db_update_msg_content(int msgid, const char *content) {
+    char ec[MAX_BODY_LEN * 2 + 4];
+    mysql_real_escape_string(g_conn, ec, content, strlen(content));
+    char *sql = (char *)malloc(strlen(ec) + 128);
+    sprintf(sql, "UPDATE messages SET content='%s' WHERE id=%d", ec, msgid);
+    LOCK(); int rc = mysql_query(g_conn, sql) ? -1 : 0; UNLOCK();
+    free(sql);
+    return rc;
+}
+
+/* 按 msgid 取消息的发送者 id 与 content(下载文件时用来定位发送者/文件元信息). 0/-1 */
+int db_msg_get(int msgid, int *from_id, char *content, int csz) {
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT from_id,content FROM messages WHERE id=%d", msgid);
+    LOCK();
+    int rc = -1;
+    if (!mysql_query(g_conn, sql)) {
+        MYSQL_RES *r = mysql_store_result(g_conn);
+        MYSQL_ROW row;
+        if (r && (row = mysql_fetch_row(r))) {
+            if (from_id) *from_id = atoi(row[0]);
+            if (content) { strncpy(content, row[1] ? row[1] : "", csz - 1); content[csz - 1] = 0; }
+            rc = 0;
+        }
+        if (r) mysql_free_result(r);
+    }
+    UNLOCK();
+    return rc;
+}
+
 int db_offline_put(int uid, int mid) {
     char sql[128];
     snprintf(sql, sizeof(sql),

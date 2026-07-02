@@ -53,6 +53,8 @@ int  db_profile_get (int uid, char *nick, int nsz, char *birth, int bsz, int *co
 
 /* 消息 */
 int  db_save_msg   (int from, int target, int type, const char *content); /* 返回 msg_id */
+int  db_update_msg_content(int msgid, const char *content);               /* 回填 content, 0/-1 */
+int  db_msg_get    (int msgid, int *from_id, char *content, int csz);     /* 取发送者/内容, 0/-1 */
 int  db_offline_put(int user_id, int msg_id);
 /* 取出离线消息, 填到 out 数组(每个含 from/target/type/body/time), 返回个数; 之后会删除. */
 typedef struct {

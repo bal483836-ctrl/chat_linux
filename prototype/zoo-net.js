@@ -19,7 +19,7 @@ const T = {
   GROUP_JOIN_REQ:34, GROUP_JOIN_NOTIFY:35, GROUP_JOIN_REPLY:36, GROUP_JOIN_REQ_LIST:37,
   GROUP_LEAVE:38, GROUP_INVITE:39,
   HISTORY_PRIV:40, HISTORY_GROUP:41, OFFLINE_PULL:42,
-  FILE_BEGIN:50, FILE_CHUNK:51, FILE_END:52,
+  FILE_BEGIN:50, FILE_CHUNK:51, FILE_END:52, FILE_GET:53,
   NOTIFY_ONLINE:60, NOTIFY_OFFLINE:61,
   USER_SEARCH:70, GROUP_SEARCH:71,
   AVATAR_UPLOAD:80, AVATAR_GET:81, AVATAR_DATA:82, MSG_SEARCH:90,
@@ -115,11 +115,14 @@ class ZooNet {
     if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
     this.send(o);
   }
+  /* 结束上传: 等服务器落库应答(body=fileid) */
   fileEnd(target, isGroup){
     const o = {type:T.FILE_END};
     if (isGroup) o.group_id = Number(target); else o.to_name = String(target);
-    this.send(o);
+    return this._req(o);
   }
+  /* 下载文件: fileid 放 status, 服务端回 FILE_BEGIN/CHUNK/END(group_id=fileid) */
+  fileGet(fileid){ this.send({type:T.FILE_GET, status:Number(fileid)||0}); }
 
   /* ---- 检索 ---- */
   userSearch(kw){ this.send({type:T.USER_SEARCH, body:kw}); }

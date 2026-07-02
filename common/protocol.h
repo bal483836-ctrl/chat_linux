@@ -48,9 +48,17 @@ enum MsgType {
     MSG_HISTORY_GROUP  = 41,  /* 拉取群聊历史 group_id                       */
     MSG_OFFLINE_PULL   = 42,  /* 登录后服务器主动推送                         */
 
-    MSG_FILE_BEGIN     = 50,  /* body=文件名, status=总字节数                */
+    /* ===== 文件/图片传输 =====
+     * 上行(客户端->服务器上传): FILE_BEGIN(to_name=对方 或 group_id=群号,
+     *   body="文件名\tMIME", status=总字节数) -> 多个 FILE_CHUNK(body=分片) -> FILE_END。
+     *   服务器把分片重组落盘 data/files/<fileid>, 并在 messages 表存一条"文件消息"
+     *   (content 以 \x01FILE\t 标记), 走和文本一样的在线推送/离线入队/历史通路。
+     * 下行(服务器->客户端下载响应): 同样用 FILE_BEGIN/CHUNK/END, 但 group_id 复用为
+     *   fileid, from_name=原发送者账号, 供客户端按 fileid 关联占位消息并组装。*/
+    MSG_FILE_BEGIN     = 50,  /* body="文件名\tMIME", status=总字节数           */
     MSG_FILE_CHUNK     = 51,  /* body=二进制分片                              */
     MSG_FILE_END       = 52,
+    MSG_FILE_GET       = 53,  /* 客户端请求下载: status=fileid; 服务端回 FILE_BEGIN.. */
 
     MSG_NOTIFY_ONLINE  = 60,  /* 服务器->客户端: 好友上线                    */
     MSG_NOTIFY_OFFLINE = 61,
