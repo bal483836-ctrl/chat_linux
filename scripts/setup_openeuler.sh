@@ -72,18 +72,9 @@ fi
 
 echo "[5/5] 编译 服务器 + 桌面客户端 ..."
 make clean >/dev/null 2>&1 || true
-# 探测 MySQL 客户端库名: mysql-devel 提供 -lmysqlclient; mariadb-connector-c-devel
-# 提供 -lmariadb。谁能链上用谁, 避免写死 -lmariadb 在只有 mysql-devel 的机器上失败。
-if echo 'int main(void){return 0;}' | cc -x c - -lmysqlclient -o /tmp/_zoolibtest 2>/dev/null; then
-  SQL_LIB="-lmysqlclient"
-elif echo 'int main(void){return 0;}' | cc -x c - -lmariadb -o /tmp/_zoolibtest 2>/dev/null; then
-  SQL_LIB="-lmariadb"
-else
-  SQL_LIB="-lmysqlclient"
-fi
-rm -f /tmp/_zoolibtest
-echo "    MySQL 链接库: $SQL_LIB"
-make SRV_LD="-lpthread $SQL_LIB -lssl -lcrypto" server
+# 服务器: Makefile 会用 mysql_config/mariadb_config 自动探测 MySQL 库路径
+# (含 -L, 兼容 openEuler 把库放在 /usr/lib64/mysql 的情况), 无需手写 SRV_LD
+make server
 # 客户端: C + WebKitGTK, Makefile 自动探测 webkit2gtk-4.1/4.0
 make client
 

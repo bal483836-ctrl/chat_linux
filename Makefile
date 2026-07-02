@@ -27,7 +27,12 @@ SRC_COMMON := common/net_io.c
 
 # --- server ---
 SRV_SRC := $(SRC_COMMON) server/server.c server/handler.c server/online.c server/db.c
-SRV_LD  := -lpthread -lmysqlclient -lssl -lcrypto
+# MySQL/MariaDB 客户端库: 优先用 mysql_config/mariadb_config 探测带 -L 路径的链接参数
+# (openEuler 的 mysql-devel 把 libmysqlclient 放在 /usr/lib64/mysql, 直接 -lmysqlclient
+#  会报 "找不到 -lmysqlclient"); 探测不到时退回 -lmysqlclient。可用 SRV_LD=... 覆盖。
+MYSQL_LD ?= $(shell mysql_config --libs 2>/dev/null || mariadb_config --libs 2>/dev/null || echo -lmysqlclient)
+MYSQL_CF := $(shell mysql_config --cflags 2>/dev/null || mariadb_config --cflags 2>/dev/null)
+SRV_LD  := -lpthread $(MYSQL_LD) -lssl -lcrypto
 
 # --- client (C + WebKitGTK) ---
 # 自动探测 webkit2gtk 版本 (优先 4.1, 退回 4.0); cJSON 优先 pkg-config 否则 -lcjson
@@ -45,7 +50,7 @@ $(BIN):
 	@mkdir -p $(BIN)
 
 server: $(BIN)
-	$(CC) $(CFLAGS) $(SRV_SRC) -o $(BIN)/chat_server $(SRV_LD)
+	$(CC) $(CFLAGS) $(MYSQL_CF) $(SRV_SRC) -o $(BIN)/chat_server $(SRV_LD)
 
 client: $(BIN)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(CLI_CF) $(CLI_SRC) -o $(BIN)/zoo-client $(CLI_LD)
