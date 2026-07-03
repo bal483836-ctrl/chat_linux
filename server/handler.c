@@ -1,3 +1,19 @@
+/* =========================================================
+ *  handler.c - 每客户端连接的业务处理线程
+ *
+ *  server.c 每 accept 一个连接就起一个线程跑 client_thread(),
+ *  该线程循环 recv_msg() 收一个定长 Message, 按 m.type 分派到对应
+ *  分支处理, 再用 send_msg()/online_push() 回应或转发。
+ *
+ *  一个线程 = 一个会话(Session), 会话状态(登录用户、文件上传缓冲)都在
+ *  栈上的 Session 结构里, 天然线程私有; 跨会话共享的只有在线表(online.c)
+ *  和数据库(db.c), 它们各自内部加锁。
+ *
+ *  消息流转的三条通路(理解本文件的关键):
+ *    - 在线直达: online_push() 直接往对方 socket 写;
+ *    - 离线兜底: 对方不在线时把 msg_id 记进 offline_msg 表, 等其上线补发;
+ *    - 历史回放: 所有消息都先 db_save_msg 落库, 客户端可随时拉历史。
+ * ========================================================= */
 #include "handler.h"
 #include "online.h"
 #include "db.h"
@@ -33,6 +49,8 @@ typedef struct {
     char           up_mime[64];
 } Session;
 
+/* 给客户端回一条统一应答 MSG_RESPONSE: status 是结果码(RS_*), text 是描述文字。
+ * 客户端据此弹提示/判断成功失败。 */
 static void resp(int fd, int status, const char *text) {
     Message m;
     memset(&m, 0, sizeof(m));
@@ -57,6 +75,7 @@ static int split_userpass(const char *body, char *u, char *p) {
     return 0;
 }
 
+/* 供 db_friend_list 等做实时在线判定的回调: 内存在线表里查得到 fd 即在线。 */
 static int is_user_online(int uid) { return online_get_fd_by_id(uid) >= 0; }
 
 /* 头像 key 是否为群头像("g"+纯数字, 如 "g5"). 顺带防路径穿越. */
@@ -236,12 +255,16 @@ static void on_login_success(Session *s) {
     notify_friends(s->uid, s->account, s->nick, 1);
 }
 
+/* 连接处理线程入口(server.c 里 pthread_create 的起点)。
+ * arg 是堆上的 int*(socket fd), 取出后立即 free。detach 自己, 线程结束即回收。
+ * 主体是"收一条 -> switch 分派 -> 处理"的循环, recv_msg 返回非 0(对端关闭
+ * 或出错)即跳出, 走 out: 做登出清理。 */
 void *client_thread(void *arg) {
     int fd = *(int *)arg;
     free(arg);
     pthread_detach(pthread_self());
 
-    Session sess = { .fd = fd, .uid = -1 };
+    Session sess = { .fd = fd, .uid = -1 };   /* uid=-1 表示尚未登录 */
     Message m;
 
     while (recv_msg(fd, &m) == 0) {
@@ -280,6 +303,9 @@ void *client_thread(void *arg) {
             break;
         }
         case MSG_LOGIN: {
+            /* 登录: 带 '@' 当邮箱登录, 否则当账号(数字)登录。
+             * 成功后: 记录会话(uid/account/nick) -> 加入在线表 -> 回一条 body
+             * 为 "账号\n昵称" 的应答 -> on_login_success 推好友/群/申请/离线消息。 */
             /* body = "account或email\npassword" */
             char first[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
             if (split_userpass(m.body, first, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
@@ -308,11 +334,14 @@ void *client_thread(void *arg) {
             break;
         }
         case MSG_LOGOUT:
-            goto out;
+            goto out;                       /* 主动登出: 跳到清理逻辑 */
 
         case MSG_PRIVATE_CHAT: do_private(&sess, &m); break;
         case MSG_GROUP_CHAT:   do_group  (&sess, &m); break;
 
+        /* ===== 好友 / 黑名单增删 =====
+         * 都是"账号字符串 -> uid -> 调 db -> 回应"的固定套路。这里的 FRIEND_ADD
+         * 是兼容用的直接互加; 正式流程走下面的 FRIEND_REQ 申请-审批。 */
         case MSG_FRIEND_ADD: {
             int fid = db_user_id_by_account(m.to_name);
             if (fid < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
@@ -348,12 +377,14 @@ void *client_thread(void *arg) {
             send_msg(fd, &o);
             break;
         }
+        /* 建群: body=群名, 成功后把新群号(字符串)放进应答 body 回给客户端 */
         case MSG_GROUP_CREATE: {
             int gid = db_group_create(sess.uid, m.body);
             if (gid < 0) resp(fd, RS_FAIL, "create group failed");
             else { char t[32]; snprintf(t, sizeof(t), "%d", gid); resp(fd, RS_OK, t); }
             break;
         }
+        /* 兼容路径: 直接加群(不审批); 正式流程见下面 GROUP_JOIN_REQ */
         case MSG_GROUP_JOIN:
             db_group_join(m.group_id, sess.uid);
             resp(fd, RS_OK, "joined");
@@ -837,6 +868,8 @@ void *client_thread(void *arg) {
     }
 
 out:
+    /* 连接结束清理: 释放未完成的文件上传缓冲; 若已登录则写下线状态并广播给
+     * 好友, 再从在线表摘除本 fd, 最后关闭 socket。 */
     free(sess.up_buf);
     if (sess.uid > 0) {
         db_set_online(sess.uid, 0);

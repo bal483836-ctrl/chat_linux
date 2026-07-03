@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <stdio.h>
 
+/* 在线用户表用一个定长数组 + 计数实现(线性表), 规模小(<=1024)时够快。
+ * g_mu 保护 g_tab/g_cnt, 所有增删查都在锁内进行。 */
 static OnlineEntry     g_tab[MAX_ONLINE_USERS];
 static int             g_cnt = 0;
 static pthread_mutex_t g_mu  = PTHREAD_MUTEX_INITIALIZER;
@@ -32,6 +34,8 @@ int online_add(int user_id, const char *name, int fd) {
     return 0;
 }
 
+/* 按 fd 移除一个在线项。用"最后一个元素填补空位"实现 O(1) 删除,
+ * 不保序也无所谓(这只是张查找表)。 */
 void online_remove_by_fd(int fd) {
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < g_cnt; ++i) {

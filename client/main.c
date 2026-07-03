@@ -150,7 +150,11 @@ static void copy_field(char *dst, const char *src){
     if (src) { strncpy(dst, src, MAX_NAME_LEN - 1); }
 }
 
-/* ---------- C -> JS 投递(必须在 GTK 主线程执行) ---------- */
+/* ---------- C -> JS 投递(必须在 GTK 主线程执行) ----------
+ * WebKit 的 run_javascript 只能在主线程调, 但消息是网络线程收到的。
+ * 于是: 网络线程把 JSON 用 base64 编码后 g_idle_add 排队, 由主线程的
+ * deliver_idle 取出, 拼成 window.__zooDeliver("<b64>") 注入页面执行。
+ * base64 既避开了往 JS 字符串里塞引号/换行的转义问题, 也能安全携带二进制。 */
 static gboolean deliver_idle(gpointer data){
     char *b64 = (char *)data;
     if (g_web){
@@ -159,12 +163,14 @@ static gboolean deliver_idle(gpointer data){
         g_free(js);
     }
     g_free(b64);
-    return G_SOURCE_REMOVE;
+    return G_SOURCE_REMOVE;   /* 一次性 idle 回调, 执行完即移除 */
 }
 static void deliver_json(const char *json){
     char *b64 = g_base64_encode((const guchar *)json, strlen(json));
     g_idle_add(deliver_idle, b64);   /* 跨线程安全: 交回主线程 */
 }
+/* 投递一条"桥事件": 连接状态变化(已连/断开/出错)通知给页面。
+ * _ev="bridge" 让前端区别于普通业务消息。 */
 static void deliver_bridge(gboolean ok, const char *msg){
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "type", 0);
@@ -176,6 +182,9 @@ static void deliver_bridge(gboolean ok, const char *msg){
     cJSON_free(json);
     cJSON_Delete(o);
 }
+/* 把一个从服务器收到的定长 Message 转成 JSON 投给页面。
+ * 定长 char 字段经 add_field 保证是合法 UTF-8; body 单独走 bodyB64(base64),
+ * 这样二进制文件分片、含 \0 的正文都能原样带过去不被截断。 */
 static void deliver_msg(const Message *m){
     cJSON *o = cJSON_CreateObject();
     cJSON_AddNumberToObject(o, "type",     m->type);
@@ -196,7 +205,14 @@ static void deliver_msg(const Message *m){
     cJSON_Delete(o);
 }
 
-/* ---------- TCP 接收线程 ---------- */
+/* ---------- TCP 接收线程 ----------
+ * 每次连接由 start_connect 起一个 reader_thread: 解析地址 -> connect ->
+ * 循环 recv_msg -> deliver_msg。它同时充当"连接的拥有者", 断开后负责收尾。
+ *
+ * 连接代号 gen: g_gen 是全局单调递增的当前连接代号, 每个 reader 记住自己
+ * 出生时的 mygen。用户重连时 start_connect 会 ++g_gen, 于是旧 reader 发现
+ * mygen != g_gen 就知道自己已被取代, 主动退出、不再往页面投消息, 避免新旧
+ * 连接的消息串台。 */
 typedef struct { char host[256]; int port; guint gen; } ConnCtx;
 
 static void *reader_thread(void *arg){
@@ -217,6 +233,7 @@ static void *reader_thread(void *arg){
     }
     freeaddrinfo(res);
 
+    /* 连上了, 但要先确认自己没被更新的连接取代, 再把 fd 公布为当前连接 */
     pthread_mutex_lock(&g_fd_mu);
     if (mygen != g_gen){ pthread_mutex_unlock(&g_fd_mu); close(fd); free(c); return NULL; }
     g_fd = fd;
@@ -224,6 +241,7 @@ static void *reader_thread(void *arg){
 
     deliver_bridge(TRUE, "connected");
 
+    /* 收包主循环: 只要还是当前代且未断开就一直收并投递 */
     Message m;
     while (mygen == g_gen && recv_msg(fd, &m) == 0){
         deliver_msg(&m);
@@ -238,6 +256,8 @@ static void *reader_thread(void *arg){
     return NULL;
 }
 
+/* 发起(重)连接: 递增连接代号使旧连接作废, 关掉旧 socket 唤醒旧 reader,
+ * 再起一个新的 reader_thread。ConnCtx 在堆上传给线程, 由线程负责 free。 */
 static void start_connect(const char *host){
     pthread_mutex_lock(&g_fd_mu);
     g_gen++; guint gen = g_gen;
@@ -253,7 +273,14 @@ static void start_connect(const char *host){
     else { free(c); deliver_bridge(FALSE, "无法创建网络线程"); }
 }
 
-/* ---------- JS -> C 命令处理(主线程) ---------- */
+/* ---------- JS -> C 命令处理(主线程) ----------
+ * 页面通过 webkit.messageHandlers.zoo.postMessage(JSON) 发来命令, 到这里
+ * 解析 cmd 字段分派:
+ *   connect  发起连接
+ *   send     把 JS 侧的消息对象编码成定长 Message 用当前 fd 发出去
+ *   win/drag 无边框窗口的最小化/最大化/关闭/拖动
+ *   report   ZOO_SELFTEST 自检结果, 打印后按成败 exit
+ * 是 SHIM_JS 里 window.zooNative 的 C 端落点。 */
 static void on_script_message(WebKitUserContentManager *ucm, WebKitJavascriptResult *res, gpointer u){
     (void)ucm; (void)u;
     JSCValue *v = webkit_javascript_result_get_js_value(res);
@@ -282,6 +309,8 @@ static void on_script_message(WebKitUserContentManager *ucm, WebKitJavascriptRes
             copy_field(m.to_name,   json_str(msg, "to_name"));
             copy_field(m.from_nick, json_str(msg, "from_nick"));
             copy_field(m.timestamp, json_str(msg, "timestamp"));
+            /* body 优先取 base64 字段(可含二进制/文件分片); 没有再回退到普通
+             * 字符串 body。两种都按 MAX_BODY_LEN 截断防溢出。 */
             const char *bb = json_str(msg, "bodyB64");
             if (bb){
                 gsize n = 0; guchar *raw = g_base64_decode(bb, &n);

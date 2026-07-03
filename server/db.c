@@ -1,3 +1,26 @@
+/* =========================================================
+ *  db.c - 数据访问层 (DAO)
+ *
+ *  所有与 MySQL 的交互都收敛在本文件, 上层(handler.c)只调用
+ *  db_xxx() 函数, 不直接碰 SQL。
+ *
+ *  线程模型:
+ *    - 进程全局只维护一条 MySQL 连接 g_conn;
+ *    - libmysqlclient 的单连接对象不是线程安全的, 因此用一把全局
+ *      互斥锁 g_dbmu 把"每一次查询"串行化(见下面的 LOCK/UNLOCK)。
+ *    - 每个 db_xxx() 内部都遵循同一套定式:
+ *          拼 SQL -> LOCK() -> mysql_query() -> 取结果 -> free -> UNLOCK()
+ *      读操作还要 mysql_store_result()/mysql_fetch_row()/mysql_free_result()。
+ *
+ *  安全:
+ *    - 一切来自用户的字符串在拼进 SQL 前都要经 esc()/mysql_real_escape_string()
+ *      转义, 防止 SQL 注入; 纯整数参数(id/gid)直接 %d 拼接是安全的。
+ *
+ *  返回值约定:
+ *    - 多数写操作 0 成功 / -1 失败;
+ *    - 插入类返回新行的自增 id(或负的错误码);
+ *    - 列表类把结果拼成多行文本填进调用方给的 out 缓冲, 返回写入的字节数。
+ * ========================================================= */
 #include "db.h"
 #include <mysql/mysql.h>
 #include <pthread.h>
@@ -11,10 +34,13 @@ static MYSQL *g_conn = NULL;
  * 教学项目这样足够; 生产环境应使用连接池. */
 static pthread_mutex_t g_dbmu = PTHREAD_MUTEX_INITIALIZER;
 
+/* 所有 db_xxx() 在访问 g_conn 前后成对调用 LOCK()/UNLOCK() 串行化访问 */
 #define LOCK()   pthread_mutex_lock(&g_dbmu)
 #define UNLOCK() pthread_mutex_unlock(&g_dbmu)
 
-/* ---- 工具: sha1 (40 hex) ---- */
+/* ---- 工具: 把明文口令算成 SHA1, 输出 40 个十六进制字符(+结尾 0) ----
+ * 数据库里只存这个摘要, 不存明文。注意: SHA1 无盐、且已不适合做口令
+ * 存储(生产应换 bcrypt/argon2), 这里仅为教学演示够用。 */
 static void sha1_hex(const char *in, char *out_hex) {
     unsigned char d[SHA_DIGEST_LENGTH];
     SHA1((const unsigned char *)in, strlen(in), d);
@@ -22,12 +48,16 @@ static void sha1_hex(const char *in, char *out_hex) {
     out_hex[SHA_DIGEST_LENGTH * 2] = 0;
 }
 
-/* ---- 工具: 防注入用 mysql_real_escape_string ---- */
+/* ---- 工具: 对字符串做 SQL 转义, 防注入 ----
+ * 包装 mysql_real_escape_string; 调用方须保证 out 至少有 strlen(in)*2+1
+ * 的空间(转义最坏情况每个字符变两个)。outsz 仅用于自文档, 未做校验。 */
 static void esc(const char *in, char *out, int outsz) {
     mysql_real_escape_string(g_conn, out, in, strlen(in));
     (void)outsz;
 }
 
+/* 建立到 MySQL 的全局连接, 服务器启动时调用一次。返回 0 成功 / -1 失败。
+ * 字符集设为 utf8mb4, 这样中文和 emoji(4 字节)都能正确存取。 */
 int db_init(const char *host, const char *user, const char *pass, const char *dbname) {
     if (mysql_library_init(0, NULL, NULL)) return -1;
     g_conn = mysql_init(NULL);
@@ -40,12 +70,15 @@ int db_init(const char *host, const char *user, const char *pass, const char *db
     return 0;
 }
 
+/* 关闭连接, 释放库资源, 服务器退出时调用。 */
 void db_close(void) {
     if (g_conn) mysql_close(g_conn);
     mysql_library_end();
 }
 
 /* ===== 用户 ===== */
+/* 把客户端可见的账号字符串(如 "100001")换算成内部 user_id 并校验其存在。
+ * 账号 = ACCOUNT_BASE + id, 所以先减去基数; 查库确认后返回 id, 否则 -1。 */
 int db_user_id_by_account(const char *account) {
     int id = atoi(account) - ACCOUNT_BASE;
     if (id <= 0) return -1;
@@ -81,6 +114,10 @@ int db_user_id_by_nick(const char *nick) {
     return id;
 }
 
+/* 注册新用户。口令先 SHA1, 昵称/邮箱先转义。
+ * avatar_color 由昵称做一次简易多项式 hash(*131) 再 %10 得到 0..9 的默认
+ * 头像色号; 用户之后若在客户端选了具体动物形象会用 db_set_avatar_color 覆盖。
+ * 成功返回新用户的 id(即自增主键), 失败返回 -RS_FAIL。 */
 int db_register(const char *nickname, const char *pass, const char *email) {
     char hash[64]; sha1_hex(pass, hash);
     char en[128]; esc(nickname, en, sizeof(en));
@@ -108,6 +145,7 @@ int db_register(const char *nickname, const char *pass, const char *email) {
     return rc;
 }
 
+/* 邮箱是否已被注册, 用于注册前查重。1=已存在, 0=不存在。 */
 int db_email_exists(const char *email) {
     if (!email || !email[0]) return 0;
     char ee[160]; esc(email, ee, sizeof(ee));
@@ -124,6 +162,7 @@ int db_email_exists(const char *email) {
     return yes;
 }
 
+/* 邮箱 + 口令登录。命中返回 user_id, 否则返回 -RS_AUTH_FAIL。 */
 int db_login_by_email(const char *email, const char *pass) {
     char hash[64]; sha1_hex(pass, hash);
     char ee[160]; esc(email, ee, sizeof(ee));
@@ -142,6 +181,7 @@ int db_login_by_email(const char *email, const char *pass) {
     return id;
 }
 
+/* 账号(id) + 口令登录。命中返回 user_id, 否则返回 -RS_AUTH_FAIL。 */
 int db_login_by_id(int uid, const char *pass) {
     char hash[64]; sha1_hex(pass, hash);
     char sql[256];
@@ -159,6 +199,7 @@ int db_login_by_id(int uid, const char *pass) {
     return id;
 }
 
+/* 取用户昵称填进 out。成功 0 / 失败 -1(用户不存在或查询失败)。 */
 int db_get_nick(int uid, char *out, int outsz) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT nickname FROM users WHERE id=%d", uid);
@@ -176,6 +217,7 @@ int db_get_nick(int uid, char *out, int outsz) {
     return ok;
 }
 
+/* 取用户头像色号(0..9), 客户端据此还原一致的动物头像。查询失败返回 0。 */
 int db_get_avatar_color(int uid) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT avatar_color FROM users WHERE id=%d", uid);
@@ -191,6 +233,8 @@ int db_get_avatar_color(int uid) {
     return c;
 }
 
+/* 把 users.online 落库为 1/0。登录/掉线时调用, 供离线查询等使用。
+ * (注意: 实时在线判断以内存表 online.c 为准, 这里的字段是持久化冗余。) */
 int db_set_online(int uid, int on) {
     char sql[128];
     snprintf(sql, sizeof(sql), "UPDATE users SET online=%d WHERE id=%d", on?1:0, uid);
@@ -199,6 +243,9 @@ int db_set_online(int uid, int on) {
 }
 
 /* ===== 好友 ===== */
+/* 建立好友关系。friends 表存的是有向边(user_id -> friend_id), 这里一次插入
+ * 两条(A->B 和 B->A)构成双向关系, 之后任一方查自己的好友列表都能查到对方。
+ * INSERT IGNORE 保证重复添加不报错。不能加自己(uid==fid)。 */
 int db_friend_add(int uid, int fid) {
     if (uid == fid) return -1;
     char sql[256];
@@ -210,6 +257,7 @@ int db_friend_add(int uid, int fid) {
     return rc == 0 ? 0 : -1;
 }
 
+/* 解除好友关系: 把双向的两条边都删掉。 */
 int db_friend_del(int uid, int fid) {
     char sql[256];
     snprintf(sql, sizeof(sql),
@@ -219,6 +267,9 @@ int db_friend_del(int uid, int fid) {
     return rc == 0 ? 0 : -1;
 }
 
+/* 设置/取消拉黑。复用 friends 表的 status 列: 0=普通好友, 1=已拉黑。
+ * 与好友关系不同, 拉黑是单向的(只改 uid->fid 这条边)。ON DUPLICATE KEY
+ * 让"边已存在则更新 status, 不存在则插入"一步完成。 */
 int db_black_set(int uid, int fid, int black) {
     char sql[256];
     /* 单向: uid 是否拉黑 fid */
@@ -230,6 +281,7 @@ int db_black_set(int uid, int fid, int black) {
     return rc == 0 ? 0 : -1;
 }
 
+/* uid 是否已把 fid 当好友(存在这条边即算, 不管黑名单)。1/0。 */
 int db_is_friend(int uid, int fid) {
     char sql[256];
     snprintf(sql, sizeof(sql),
@@ -245,6 +297,7 @@ int db_is_friend(int uid, int fid) {
     return yes;
 }
 
+/* uid 是否拉黑了 fid(status=1)。1/0。发私聊前用它拦截被对方拉黑的消息。 */
 int db_is_black(int uid, int fid) {
     char sql[256];
     snprintf(sql, sizeof(sql),
@@ -261,10 +314,15 @@ int db_is_black(int uid, int fid) {
     return yes;
 }
 
-/* 输出格式: "account\tnickname\tavatar_color\tonline\tblack\tremark\n" */
+/* 列出 uid 的所有好友, 拼成多行文本填进 out, 返回写入字节数。
+ * 每行: "account\tnickname\tavatar_color\tonline\tblack\tremark\n"。
+ * 在线状态(online)由调用方传入的回调 is_online(fid) 实时判定(查内存在线表),
+ * 而不是读 users.online 字段, 保证准确。
+ * 循环里 snprintf 的返回值一旦 >= 剩余空间就 break, 避免写溢出/截断半行。 */
 int db_friend_list(int uid, char *out, int outsz,
                    int (*is_online)(int)) {
     char sql[320];
+    /* friends 有向边 join users 拿到好友的昵称/头像色/备注 */
     snprintf(sql, sizeof(sql),
         "SELECT u.id,u.nickname,u.avatar_color,f.status,f.remark FROM friends f "
         "JOIN users u ON u.id=f.friend_id WHERE f.user_id=%d", uid);
@@ -277,13 +335,13 @@ int db_friend_list(int uid, char *out, int outsz,
         while (r && (row = mysql_fetch_row(r))) {
             int fid    = atoi(row[0]);
             int color  = atoi(row[2]);
-            int black  = atoi(row[3]);
+            int black  = atoi(row[3]);   /* f.status: 1 表示我把这个好友拉黑了 */
             int online = is_online ? is_online(fid) : 0;
             const char *remark = row[4] ? row[4] : "";
             int n = snprintf(out + used, outsz - used,
                              "%d\t%s\t%d\t%d\t%d\t%s\n",
                              ACCOUNT_BASE + fid, row[1], color, online, black, remark);
-            if (n <= 0 || n >= outsz - used) break;
+            if (n <= 0 || n >= outsz - used) break;   /* 缓冲写满, 停止 */
             used += n;
         }
         if (r) mysql_free_result(r);
@@ -293,6 +351,8 @@ int db_friend_list(int uid, char *out, int outsz,
 }
 
 /* ===== 群组 ===== */
+/* 建群: 先插 chat_groups 拿到自增 gid, 再把群主本人加进 group_members
+ * (创建者自动成为第一个成员)。两步在同一把锁内完成。返回 gid, 失败 -1。 */
 int db_group_create(int owner, const char *name) {
     char en[128]; esc(name, en, sizeof(en));
     char sql[512];
@@ -310,6 +370,7 @@ int db_group_create(int owner, const char *name) {
     return gid;
 }
 
+/* 把 uid 加进群 gid(审批通过或兼容路径)。INSERT IGNORE 防重复入群。0/-1。 */
 int db_group_join(int gid, int uid) {
     char sql[256];
     snprintf(sql, sizeof(sql),
@@ -318,6 +379,7 @@ int db_group_join(int gid, int uid) {
     return rc == 0 ? 0 : -1;
 }
 
+/* 列出 uid 加入的所有群, 每行 "gid\tname\towner_id\n", 返回写入字节数。 */
 int db_group_list_for_user(int uid, char *out, int outsz) {
     char sql[256];
     snprintf(sql, sizeof(sql),
@@ -340,6 +402,8 @@ int db_group_list_for_user(int uid, char *out, int outsz) {
     return used;
 }
 
+/* 取群成员的 user_id 列表填进 ids[](最多 max 个), 返回实际个数。
+ * 群聊分发消息时要遍历这个列表逐个在线推送/离线入队。 */
 int db_group_members(int gid, int *ids, int max) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT user_id FROM group_members WHERE group_id=%d", gid);
@@ -356,8 +420,13 @@ int db_group_members(int gid, int *ids, int max) {
 }
 
 /* ===== 消息 ===== */
+/* 把一条消息落库(不论在线离线, 所有消息都先入 messages 表, 才能支持历史/离线)。
+ *   from   发送者 uid
+ *   target 私聊=对方 uid, 群聊=gid
+ *   type   0=私聊 1=群聊
+ * content 可能含二进制/长文本, 故用堆上缓冲并 escape。返回新 msg_id, 失败 -1。 */
 int db_save_msg(int from, int target, int type, const char *content) {
-    char ec[MAX_BODY_LEN * 2 + 4];
+    char ec[MAX_BODY_LEN * 2 + 4];   /* 转义最坏膨胀一倍, 预留足够空间 */
     mysql_real_escape_string(g_conn, ec, content, strlen(content));
     char *sql = (char *)malloc(strlen(ec) + 256);
     sprintf(sql,
@@ -402,6 +471,8 @@ int db_msg_get(int msgid, int *from_id, char *content, int csz) {
     return rc;
 }
 
+/* 给离线用户 uid 记一条待收消息: 只存 message_id 引用(正文已在 messages 表),
+ * 等对方上线时 db_offline_take 再取出投递。0/-1。 */
 int db_offline_put(int uid, int mid) {
     char sql[128];
     snprintf(sql, sizeof(sql),
@@ -410,6 +481,10 @@ int db_offline_put(int uid, int mid) {
     return rc == 0 ? 0 : -1;
 }
 
+/* 公共取行逻辑: 执行一条"六列固定顺序"的 SELECT
+ *   (from_id, target_id, msg_type, content, sent_at, from_nick)
+ * 把每行填进 OfflineRow 数组, 返回行数。离线消息 / 私聊历史 / 群聊历史
+ * 三处共用这个函数, 只是传入的 SQL 不同。 */
 static int fetch_rows(const char *sql, OfflineRow *rows, int max) {
     LOCK();
     int n = 0;
@@ -431,6 +506,8 @@ static int fetch_rows(const char *sql, OfflineRow *rows, int max) {
     return n;
 }
 
+/* 取出并清空 uid 的离线消息: 先按消息 id 升序(时间顺序)取回最多 max 条,
+ * 再 DELETE 掉该用户的全部离线记录(取走即消费)。返回取到的条数。 */
 int db_offline_take(int uid, OfflineRow *rows, int max) {
     char sql[512];
     snprintf(sql, sizeof(sql),
@@ -446,6 +523,7 @@ int db_offline_take(int uid, OfflineRow *rows, int max) {
     return n;
 }
 
+/* 拉取 a 与 b 之间的私聊历史(双向, 谁发给谁都算), 按时间升序, 最多 max 条。 */
 int db_history_priv(int a, int b, OfflineRow *rows, int max) {
     char sql[512];
     snprintf(sql, sizeof(sql),
@@ -456,6 +534,7 @@ int db_history_priv(int a, int b, OfflineRow *rows, int max) {
     return fetch_rows(sql, rows, max);
 }
 
+/* 拉取群 gid 的群聊历史, 按时间升序, 最多 max 条。 */
 int db_history_group(int gid, OfflineRow *rows, int max) {
     char sql[512];
     snprintf(sql, sizeof(sql),
@@ -466,6 +545,9 @@ int db_history_group(int gid, OfflineRow *rows, int max) {
 }
 
 /* ===== 好友申请 ===== */
+/* 提交一条好友申请(from_id 想加 to_id, hello 是招呼语)。
+ * 幂等设计: 若已存在同向且未处理(status=0)的申请, 就复用它并更新 hello,
+ * 避免重复点"加好友"产生一堆待处理记录。返回 reqid, 失败 -1。 */
 int db_freq_put(int from_id, int to_id, const char *hello) {
     char eh[512] = "";
     if (hello && *hello) mysql_real_escape_string(g_conn, eh, hello, strlen(hello));
@@ -496,6 +578,7 @@ int db_freq_put(int from_id, int to_id, const char *hello) {
     return reqid;
 }
 
+/* 按 reqid 取出申请的双方 id(审批时用来校验 to_id 就是当前用户)。0/-1。 */
 int db_freq_info(int reqid, int *from_id, int *to_id) {
     char sql[128];
     snprintf(sql, sizeof(sql),
@@ -514,6 +597,7 @@ int db_freq_info(int reqid, int *from_id, int *to_id) {
     return ok;
 }
 
+/* 标记申请处理结果: status 1=同意 2=拒绝(0 表示仍待处理)。0/-1。 */
 int db_freq_set(int reqid, int status) {
     char sql[128];
     snprintf(sql, sizeof(sql),
@@ -548,7 +632,9 @@ int db_freq_list(int to_id, char *out, int outsz) {
     return used;
 }
 
-/* ===== 入群申请 ===== */
+/* ===== 入群申请 =====
+ * 结构与好友申请完全对称, 只是对象换成 (群, 用户), 审批人是群主。 */
+/* 提交入群申请, 已有未处理的同向申请则复用并更新 hello。返回 reqid / -1。 */
 int db_greq_put(int gid, int user_id, const char *hello) {
     char eh[512] = "";
     if (hello && *hello) mysql_real_escape_string(g_conn, eh, hello, strlen(hello));
@@ -578,6 +664,7 @@ int db_greq_put(int gid, int user_id, const char *hello) {
     return reqid;
 }
 
+/* 按 reqid 取出申请对应的群号与申请人 id。0/-1。 */
 int db_greq_info(int reqid, int *gid, int *user_id) {
     char sql[128];
     snprintf(sql, sizeof(sql),
@@ -596,6 +683,7 @@ int db_greq_info(int reqid, int *gid, int *user_id) {
     return ok;
 }
 
+/* 标记入群申请结果: status 1=同意 2=拒绝。0/-1。 */
 int db_greq_set(int reqid, int status) {
     char sql[128];
     snprintf(sql, sizeof(sql),
@@ -604,6 +692,9 @@ int db_greq_set(int reqid, int status) {
     return rc == 0 ? 0 : -1;
 }
 
+/* 列出 owner_id 名下所有群的待处理入群申请(供群主审批面板)。
+ * 每行 "reqid\tgid\tgname\tfrom_nick\ttime\thello\n"。三表 join:
+ * 申请表 -> 群(筛 owner_id) -> 申请人(取昵称)。 */
 int db_greq_list_for_owner(int owner_id, char *out, int outsz) {
     char sql[512];
     snprintf(sql, sizeof(sql),
@@ -630,6 +721,7 @@ int db_greq_list_for_owner(int owner_id, char *out, int outsz) {
     return used;
 }
 
+/* 取群主 uid。群不存在返回 -1。用于权限判断(改公告/审批入群仅群主可为)。 */
 int db_group_owner(int gid) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT owner_id FROM chat_groups WHERE id=%d", gid);
@@ -645,6 +737,7 @@ int db_group_owner(int gid) {
     return id;
 }
 
+/* 取群名填进 out。0/-1。 */
 int db_group_name(int gid, char *out, int outsz) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT name FROM chat_groups WHERE id=%d", gid);
@@ -662,6 +755,7 @@ int db_group_name(int gid, char *out, int outsz) {
     return ok;
 }
 
+/* 取群成员人数(搜索结果里展示用)。 */
 int db_group_member_count(int gid) {
     char sql[128];
     snprintf(sql, sizeof(sql),
@@ -719,6 +813,8 @@ int db_user_search(const char *q, char *out, int outsz,
     return used;
 }
 
+/* 按群名模糊搜索群。每行 "gid\tname\towner_nick\tmember_count\n"。
+ * LEFT JOIN group_members + GROUP BY 顺带统计成员数。最多 50 条。 */
 int db_group_search(const char *q, char *out, int outsz) {
     char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
     char sql[512];
@@ -811,6 +907,7 @@ int db_msg_search(int user_id, const char *q, char *out, int outsz) {
  *  好友备注 / 群成员管理 / 群公告 / 个人资料  (Web 原型新增功能)
  * ============================================================ */
 
+/* 给好友设置备注名(只改 uid 这一侧的 friends.remark, 备注是"我看对方"的私有信息)。 */
 int db_friend_set_remark(int uid, int fid, const char *remark) {
     char en[128]; esc(remark, en, sizeof(en));
     char sql[256];
@@ -820,6 +917,7 @@ int db_friend_set_remark(int uid, int fid, const char *remark) {
     return rc;
 }
 
+/* uid 是否是群 gid 的成员。1/0。发群消息/群文件/邀请前的权限校验。 */
 int db_group_is_member(int gid, int uid) {
     char sql[160];
     snprintf(sql, sizeof(sql),
@@ -835,6 +933,7 @@ int db_group_is_member(int gid, int uid) {
     return yes;
 }
 
+/* 直接把 uid 拉进群(成员邀请路径, 无需群主审批)。INSERT IGNORE 幂等。0/-1。 */
 int db_group_add_member(int gid, int uid) {
     char sql[160];
     snprintf(sql, sizeof(sql),
@@ -843,6 +942,7 @@ int db_group_add_member(int gid, int uid) {
     return rc;
 }
 
+/* 退群: 删掉 uid 在 gid 里的成员行(群主退群的限制在 handler 层拦截)。0/-1。 */
 int db_group_leave(int gid, int uid) {
     char sql[160];
     snprintf(sql, sizeof(sql),
@@ -851,6 +951,7 @@ int db_group_leave(int gid, int uid) {
     return rc;
 }
 
+/* 取群公告文本填进 out(NULL 视作空串)。0/-1。 */
 int db_group_notice_get(int gid, char *out, int outsz) {
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT notice FROM chat_groups WHERE id=%d", gid);
@@ -869,6 +970,7 @@ int db_group_notice_get(int gid, char *out, int outsz) {
     return rc;
 }
 
+/* 设置群公告(权限校验在 handler 层)。0/-1。 */
 int db_group_set_notice(int gid, const char *notice) {
     char en[1100]; esc(notice, en, sizeof(en));
     char sql[1300];
@@ -877,6 +979,8 @@ int db_group_set_notice(int gid, const char *notice) {
     return rc;
 }
 
+/* 设置生日。传入空串则置 NULL(清空)。只取前 10 个字符即 "YYYY-MM-DD",
+ * 且字段是纯数字和横杠、格式固定, 故这里未 escape。 */
 int db_set_birthday(int uid, const char *birth) {
     char sql[160];
     if (birth && birth[0])
@@ -887,6 +991,7 @@ int db_set_birthday(int uid, const char *birth) {
     return rc;
 }
 
+/* 修改昵称。0/-1。 */
 int db_set_nick(int uid, const char *nick) {
     char en[128]; esc(nick, en, sizeof(en));
     char sql[256];
@@ -905,6 +1010,9 @@ int db_set_avatar_color(int uid, int color) {
     return rc;
 }
 
+/* 一次取回资料三件套: 昵称 / 头像色 / 生日。任一 out 指针可为 NULL 表示不取。
+ * 生日用 DATE_FORMAT 统一成 "YYYY-MM-DD" 字符串(SQL 里 %% 是给 snprintf 转义,
+ * 下到 MySQL 是单 %)。0/-1。 */
 int db_profile_get(int uid, char *nick, int nsz, char *birth, int bsz, int *color) {
     char sql[200];
     snprintf(sql, sizeof(sql),
