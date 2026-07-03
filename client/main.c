@@ -126,25 +126,31 @@ static const char *AUTOLOGIN_JS =
 "  doLogin();"
 "}catch(e){console.error('autologin',e);}})();})();";
 
-/* ---------- 小工具 ---------- */
+/* ---------- 小工具: 安全地从 cJSON 对象里取字段 ---------- */
+/* 取字符串字段: 键不存在或类型不是字符串都返回 NULL, 调用方无需自己判类型。 */
 static const char *json_str(cJSON *o, const char *k){
     cJSON *i = cJSON_GetObjectItem(o, k);
     return (i && cJSON_IsString(i)) ? i->valuestring : NULL;
 }
+/* 取数值字段: 缺失或非数值返回 0。 */
 static double json_num(cJSON *o, const char *k){
     cJSON *i = cJSON_GetObjectItem(o, k);
     return (i && cJSON_IsNumber(i)) ? i->valuedouble : 0;
 }
-/* 定长 char[32] 字段 -> cJSON 字符串(保证有效 UTF-8) */
+/* 把 Message 里的定长 char[MAX_NAME_LEN] 字段安全地放进 JSON。
+ * 定长字段可能没有结尾 '\0', 且可能含无效 UTF-8 字节(cJSON 会拒绝),
+ * 所以: 先拷进带结尾 0 的临时 buf, 再用 g_utf8_make_valid 把非法字节替换成
+ * 占位符, 保证一定是合法 UTF-8, cJSON 才不会报错。 */
 static void add_field(cJSON *o, const char *key, const char *src){
     char buf[MAX_NAME_LEN + 1];
     memcpy(buf, src, MAX_NAME_LEN);
-    buf[MAX_NAME_LEN] = 0;
-    char *valid = g_utf8_make_valid(buf, -1);
+    buf[MAX_NAME_LEN] = 0;                       /* 兜底补结尾 0 */
+    char *valid = g_utf8_make_valid(buf, -1);    /* 洗成合法 UTF-8(新分配的串) */
     cJSON_AddStringToObject(o, key, valid ? valid : "");
     g_free(valid);
 }
-/* cJSON 字符串 -> 定长 char[32] 字段 */
+/* 反方向: 把 JSON 字符串写回 Message 的定长字段。先清零(保证结尾 0 且尾部干净),
+ * 再限长拷贝, 留最后 1 字节永远为 0。src 可为 NULL(字段缺失)则留全零。 */
 static void copy_field(char *dst, const char *src){
     memset(dst, 0, MAX_NAME_LEN);
     if (src) { strncpy(dst, src, MAX_NAME_LEN - 1); }
@@ -219,19 +225,22 @@ static void *reader_thread(void *arg){
     ConnCtx *c = (ConnCtx *)arg;
     guint mygen = c->gen;
 
+    /* 域名/IP 解析: getaddrinfo 把主机名+端口解析成可用的地址结构 res。
+     * hints 限定只要 IPv4(AF_INET) 的 TCP(SOCK_STREAM) 结果。任何一步失败都
+     * 通过 deliver_bridge 把错误原因回报给页面, 并释放 c 后结束线程。 */
     struct addrinfo hints, *res = NULL;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET; hints.ai_socktype = SOCK_STREAM;
-    char portstr[16]; snprintf(portstr, sizeof(portstr), "%d", c->port);
+    char portstr[16]; snprintf(portstr, sizeof(portstr), "%d", c->port);  /* 端口要传字符串 */
     if (getaddrinfo(c->host, portstr, &hints, &res) != 0 || !res){
         deliver_bridge(FALSE, "无法解析服务器地址"); free(c); return NULL;
     }
-    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+    int fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol);  /* 建 socket */
     if (fd < 0){ freeaddrinfo(res); deliver_bridge(FALSE, "socket 创建失败"); free(c); return NULL; }
-    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0){
+    if (connect(fd, res->ai_addr, res->ai_addrlen) < 0){                  /* 发起 TCP 连接 */
         close(fd); freeaddrinfo(res); deliver_bridge(FALSE, "无法连接服务器"); free(c); return NULL;
     }
-    freeaddrinfo(res);
+    freeaddrinfo(res);   /* 地址信息用完即释放 */
 
     /* 连上了, 但要先确认自己没被更新的连接取代, 再把 fd 公布为当前连接 */
     pthread_mutex_lock(&g_fd_mu);
@@ -350,7 +359,11 @@ static void on_script_message(WebKitUserContentManager *ucm, WebKitJavascriptRes
     cJSON_Delete(root);
 }
 
-/* ---------- 自定义 URI scheme: app://zoo/<file> -> prototype/<file> ---------- */
+/* ---------- 自定义 URI scheme: app://zoo/<file> -> prototype/<file> ----------
+ * 不用 file:// 而自建 app:// 协议, 是为了给页面一个稳定的 origin(同源),
+ * localStorage / fetch 等才能正常工作。下面两个函数是这个"迷你静态服务器"。 */
+/* 按扩展名猜 Content-Type。strrchr 找最后一个 '.' 定位扩展名; 认不出的按
+ * 二进制流处理。WebView 拿这个头决定怎么渲染(HTML/JS/图片等)。 */
 static const char *mime_for(const char *path){
     const char *d = strrchr(path, '.');
     if (!d) return "application/octet-stream";
@@ -370,29 +383,36 @@ static const char *mime_for(const char *path){
     if (!strcmp(d, ".json")) return "application/json";
     return "application/octet-stream";
 }
+/* WebView 每请求一个 app://zoo/xxx 资源就回调这里: 把请求路径映射到本地
+ * prototype 目录下的文件, 读出来交给 WebView。相当于处理一个 HTTP GET。 */
 static void uri_scheme_cb(WebKitURISchemeRequest *req, gpointer user){
     (void)user;
     const char *path = webkit_uri_scheme_request_get_path(req);   /* 形如 "/zoo-chat.html" */
-    if (!path || !*path || !strcmp(path, "/")) path = "/zoo-chat.html";
-    while (*path == '/') path++;
-    if (strstr(path, "..")){                                       /* 防目录穿越 */
+    if (!path || !*path || !strcmp(path, "/")) path = "/zoo-chat.html";  /* 根路径给首页 */
+    while (*path == '/') path++;                                   /* 去掉开头的 '/' 以便拼相对路径 */
+    if (strstr(path, "..")){                                       /* 出现 ".." 一律拒绝, 防目录穿越 */
         GError *e = g_error_new_literal(g_quark_from_static_string("zoo-app"), 403, "forbidden");
         webkit_uri_scheme_request_finish_error(req, e); g_error_free(e); return;
     }
     char full[8192];
-    snprintf(full, sizeof(full), "%s/%s", g_proto_dir, path);
+    snprintf(full, sizeof(full), "%s/%s", g_proto_dir, path);     /* 拼成绝对文件路径 */
     gchar *contents = NULL; gsize len = 0; GError *err = NULL;
-    if (!g_file_get_contents(full, &contents, &len, &err)){
+    if (!g_file_get_contents(full, &contents, &len, &err)){        /* 一次性读整个文件 */
         GError *e = g_error_new(g_quark_from_static_string("zoo-app"), 404, "not found: %s", full);
-        webkit_uri_scheme_request_finish_error(req, e);
+        webkit_uri_scheme_request_finish_error(req, e);           /* 读不到回 404 */
         g_error_free(e); if (err) g_error_free(err); return;
     }
+    /* 把读到的字节包成输入流交回 WebView; 第三个参数 g_free 是流销毁时用来释放
+     * contents 的回调, 所以这里不必手动 free(contents)。 */
     GInputStream *st = g_memory_input_stream_new_from_data(contents, len, g_free);
     webkit_uri_scheme_request_finish(req, st, len, mime_for(path));
     g_object_unref(st);
 }
 
-/* ---------- 渲染截图(自检/答辩用): 加载完成后存 PNG 退出 ---------- */
+/* ---------- 渲染截图(自检/答辩用): 加载完成后存 PNG 退出 ----------
+ * 仅当设了 ZOO_SHOT 环境变量时启用。流程: 页面加载完 -> 等 g_shot_delay 毫秒
+ * (给动画/字体渲染留时间) -> 异步抓可视区快照 -> 写成 PNG -> 退出。 */
+/* 快照就绪回调: 把 cairo surface 存成 PNG 文件, 成功退出 0 失败退出 1。 */
 static void snapshot_cb(GObject *src, GAsyncResult *res, gpointer u){
     (void)u;
     cairo_surface_t *s = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(src), res, NULL);
@@ -411,27 +431,38 @@ static void on_load_changed(WebKitWebView *w, WebKitLoadEvent ev, gpointer u){
     if (ev == WEBKIT_LOAD_FINISHED && g_shot[0]) g_timeout_add(g_shot_delay, do_snapshot, NULL);
 }
 
-/* ---------- 定位 prototype 目录 ---------- */
+/* ---------- 定位 prototype 目录 ----------
+ * 页面文件不一定在当前工作目录, 这里按多个候选路径逐一探测, 找到含
+ * zoo-chat.html 的那个作为站点根 g_proto_dir。 */
+/* 某目录下是否有 zoo-chat.html(用它作为"这是不是 prototype 目录"的判据) */
 static int has_html(const char *dir){
     char p[8192]; snprintf(p, sizeof(p), "%s/zoo-chat.html", dir);
-    return access(p, F_OK) == 0;
+    return access(p, F_OK) == 0;                 /* F_OK: 只判存在 */
 }
+/* 把候选路径规范成绝对路径存进 g_proto_dir; realpath 失败(路径暂不存在等)
+ * 就退而存原始字符串。 */
 static void set_proto(const char *cand){
     if (!realpath(cand, g_proto_dir)){
         strncpy(g_proto_dir, cand, sizeof(g_proto_dir) - 1);
         g_proto_dir[sizeof(g_proto_dir) - 1] = 0;
     }
 }
+/* 按优先级依次尝试, 命中即定下:
+ *   1) 环境变量 ZOO_PROTO_DIR 显式指定
+ *   2) 可执行文件所在目录的 ../prototype 和 ./prototype(装到 bin/ 旁边时)
+ *   3) 当前目录的 prototype / ../prototype(在源码树里直接跑时)
+ * 都找不到只打印警告, 让程序继续(页面会 404, 便于排查)。 */
 static void resolve_proto_dir(void){
     const char *env = getenv("ZOO_PROTO_DIR");
     if (env && has_html(env)){ set_proto(env); return; }
 
+    /* 读 /proc/self/exe 拿到本可执行文件的绝对路径, 再取其所在目录 */
     char exe[4096];
     ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
     if (n > 0){
-        exe[n] = 0;
+        exe[n] = 0;                              /* readlink 不补 0, 手动补 */
         char tmp[4096]; strncpy(tmp, exe, sizeof(tmp)-1); tmp[sizeof(tmp)-1]=0;
-        char *dir = dirname(tmp);
+        char *dir = dirname(tmp);                /* 注意: dirname 可能改写 tmp, 故先拷贝 */
         char cand[5200];
         snprintf(cand, sizeof(cand), "%s/../prototype", dir);
         if (has_html(cand)){ set_proto(cand); return; }

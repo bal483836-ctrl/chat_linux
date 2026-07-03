@@ -76,18 +76,42 @@ void db_close(void) {
     mysql_library_end();
 }
 
+/* ================================================================
+ *  【读查询的固定套路 —— 本文件后面所有 SELECT 都是这个结构, 先讲透一次】
+ *
+ *    LOCK();                                  // 独占 g_conn(单连接不可并发)
+ *    if (!mysql_query(g_conn, sql)) {         // 返回 0 表示执行成功
+ *        MYSQL_RES *r = mysql_store_result(g_conn);   // 把整个结果集拉到本地内存
+ *        MYSQL_ROW row;                       // row 实为 char**(每列一个字符串)
+ *        while (r && (row = mysql_fetch_row(r))) {    // 逐行取, 取完返回 NULL
+ *            ... row[0], row[1] ...           // 按 SELECT 的列顺序下标取值
+ *        }                                    // 注意: 列可能是 NULL, 用前要判空
+ *        if (r) mysql_free_result(r);         // 必须释放, 否则内存泄漏
+ *    }
+ *    UNLOCK();
+ *
+ *  要点:
+ *    - mysql_query 返回 0 才算成功(非 0 是出错), 所以判断写成 !mysql_query;
+ *    - mysql_store_result 对 SELECT 才有结果; 对 INSERT/UPDATE/DELETE 返回 NULL,
+ *      所以写操作后不需要 store/free;
+ *    - row[i] 是以 '\0' 结尾的字符串(即使该列是整数, 也要 atoi 转), NULL 列
+ *      对应 row[i]==NULL, 直接 atoi/strcpy 会崩, 故常见写法是 row[i]?row[i]:"";
+ *    - LOCK/UNLOCK 之间要尽量短, 且中途 return 前务必先 UNLOCK(见 db_register)。
+ * ================================================================ */
+
 /* ===== 用户 ===== */
 /* 把客户端可见的账号字符串(如 "100001")换算成内部 user_id 并校验其存在。
  * 账号 = ACCOUNT_BASE + id, 所以先减去基数; 查库确认后返回 id, 否则 -1。 */
 int db_user_id_by_account(const char *account) {
-    int id = atoi(account) - ACCOUNT_BASE;
-    if (id <= 0) return -1;
+    int id = atoi(account) - ACCOUNT_BASE;   /* "100001" -> 100001 -> 1 */
+    if (id <= 0) return -1;                   /* 非法账号(非数字/小于基数)直接拒 */
     char sql[128];
     snprintf(sql, sizeof(sql), "SELECT id FROM users WHERE id=%d", id);
     LOCK();
-    int ok = -1;
-    if (!mysql_query(g_conn, sql)) {
+    int ok = -1;                              /* 默认失败 */
+    if (!mysql_query(g_conn, sql)) {          /* 查询成功 */
         MYSQL_RES *r = mysql_store_result(g_conn);
+        /* 只要能取到一行, 就说明该 id 存在, 无需读具体列值 */
         if (r && mysql_fetch_row(r)) ok = id;
         if (r) mysql_free_result(r);
     }
@@ -98,8 +122,9 @@ int db_user_id_by_account(const char *account) {
 /* 按昵称查 user_id. 昵称可重复, 这里返回第一条匹配; 主要用于查找
  * sql/init.sql 里的"小助手 / 新手指南"两个 mock 好友的 id. */
 int db_user_id_by_nick(const char *nick) {
-    char en[128]; esc(nick, en, sizeof(en));
+    char en[128]; esc(nick, en, sizeof(en));   /* 昵称来自外部, 先转义防注入 */
     char sql[256];
+    /* ORDER BY id ASC LIMIT 1: 昵称可能重名, 取 id 最小(最早注册)的一个 */
     snprintf(sql, sizeof(sql),
         "SELECT id FROM users WHERE nickname='%s' ORDER BY id ASC LIMIT 1", en);
     LOCK();
@@ -107,6 +132,7 @@ int db_user_id_by_nick(const char *nick) {
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
+        /* row[0] 是 id 列的字符串形式, atoi 转成整数 */
         if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);
         if (r) mysql_free_result(r);
     }
@@ -119,27 +145,36 @@ int db_user_id_by_nick(const char *nick) {
  * 头像色号; 用户之后若在客户端选了具体动物形象会用 db_set_avatar_color 覆盖。
  * 成功返回新用户的 id(即自增主键), 失败返回 -RS_FAIL。 */
 int db_register(const char *nickname, const char *pass, const char *email) {
-    char hash[64]; sha1_hex(pass, hash);
-    char en[128]; esc(nickname, en, sizeof(en));
+    char hash[64]; sha1_hex(pass, hash);            /* 口令 -> 40 位 SHA1 十六进制 */
+    char en[128]; esc(nickname, en, sizeof(en));    /* 昵称转义 */
+    /* 邮箱可选: 有才转义, 没有就置空串, 后面据此选带不带 email 列的 INSERT */
     char ee[160]; if (email && email[0]) esc(email, ee, sizeof(ee)); else ee[0] = 0;
+
+    /* 由昵称算一个稳定的默认头像色号 0..9:
+     *   逐字符做多项式滚动 hash (h = h*131 + c), & 0xFFFF 防溢出保持在 16 位,
+     *   最后 %10 落到 [0,9]。同一昵称每次算出的值相同, 保证一致性。
+     *   (unsigned char) 强转避免高位字符(如中文字节)被当负数。 */
     int color = 0;
     for (const char *p = nickname; *p; ++p) color = (color * 131 + (unsigned char)*p) & 0xFFFF;
     color %= 10;
+
     char sql[600];
-    if (ee[0])
+    if (ee[0])   /* 带邮箱 */
         snprintf(sql, sizeof(sql),
             "INSERT INTO users(nickname,password,avatar_color,email) VALUES('%s','%s',%d,'%s')",
             en, hash, color, ee);
-    else
+    else         /* 不带邮箱(email 列留默认 NULL) */
         snprintf(sql, sizeof(sql),
             "INSERT INTO users(nickname,password,avatar_color) VALUES('%s','%s',%d)",
             en, hash, color);
     LOCK();
     int rc;
     if (mysql_query(g_conn, sql) != 0) {
+        /* INSERT 失败最常见原因是 email 唯一键冲突(并发下查重漏网) */
         rc = -RS_FAIL;
-        UNLOCK(); return rc;
+        UNLOCK(); return rc;         /* 提前返回也要先 UNLOCK, 否则死锁 */
     }
+    /* mysql_insert_id 返回刚插入行的自增主键, 即新用户 id */
     rc = (int)mysql_insert_id(g_conn);
     UNLOCK();
     return rc;
@@ -162,19 +197,21 @@ int db_email_exists(const char *email) {
     return yes;
 }
 
-/* 邮箱 + 口令登录。命中返回 user_id, 否则返回 -RS_AUTH_FAIL。 */
+/* 邮箱 + 口令登录。命中返回 user_id, 否则返回 -RS_AUTH_FAIL。
+ * 校验方式: 把"邮箱 AND 口令 hash"一起写进 WHERE, 能查到行就说明凭据正确,
+ * 查不到则邮箱不存在或密码错都归为同一种失败(不区分, 避免泄露账号是否存在)。 */
 int db_login_by_email(const char *email, const char *pass) {
-    char hash[64]; sha1_hex(pass, hash);
+    char hash[64]; sha1_hex(pass, hash);        /* 只比对 hash, 库里不存明文 */
     char ee[160]; esc(email, ee, sizeof(ee));
     char sql[320];
     snprintf(sql, sizeof(sql),
         "SELECT id FROM users WHERE email='%s' AND password='%s'", ee, hash);
     LOCK();
-    int id = -RS_AUTH_FAIL;
+    int id = -RS_AUTH_FAIL;                      /* 默认认证失败 */
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
-        if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);
+        if (r && (row = mysql_fetch_row(r))) id = atoi(row[0]);   /* 命中即取 id */
         if (r) mysql_free_result(r);
     }
     UNLOCK();
@@ -209,6 +246,8 @@ int db_get_nick(int uid, char *out, int outsz) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
         if (r && (row = mysql_fetch_row(r))) {
+            /* strncpy 最多写 outsz-1 字节, 再手动补 '\0' 保证是合法 C 字符串
+             * (strncpy 在源串超长时不会自动加结尾 0, 这是它的著名坑) */
             strncpy(out, row[0], outsz - 1); out[outsz - 1] = 0; ok = 0;
         }
         if (r) mysql_free_result(r);
@@ -234,7 +273,12 @@ int db_get_avatar_color(int uid) {
 }
 
 /* 把 users.online 落库为 1/0。登录/掉线时调用, 供离线查询等使用。
- * (注意: 实时在线判断以内存表 online.c 为准, 这里的字段是持久化冗余。) */
+ * (注意: 实时在线判断以内存表 online.c 为准, 这里的字段是持久化冗余。)
+ *
+ * 【写操作的固定套路】UPDATE/DELETE/INSERT 这类不返回结果集的语句, 只需:
+ *     LOCK(); int rc = mysql_query(g_conn, sql); UNLOCK();
+ * 不用 store/fetch/free。mysql_query 返回 0 即成功, 本函数据此归一成 0/-1。
+ * on?1:0 把任意非零 on 规整为 1, 避免把奇怪的值写进库。 */
 int db_set_online(int uid, int on) {
     char sql[128];
     snprintf(sql, sizeof(sql), "UPDATE users SET online=%d WHERE id=%d", on?1:0, uid);
@@ -249,7 +293,10 @@ int db_set_online(int uid, int on) {
 int db_friend_add(int uid, int fid) {
     if (uid == fid) return -1;
     char sql[256];
-    /* 双向插入, 便于反向查询 */
+    /* 一条 INSERT 插两行(VALUES 后跟两组括号):
+     *   (uid, fid, 0)  -- 我->你, status 0=普通(未拉黑)
+     *   (fid, uid, 0)  -- 你->我
+     * IGNORE: 若某条已存在(命中唯一键)则跳过而非报错, 实现"加过就不重复加"。 */
     snprintf(sql, sizeof(sql),
         "INSERT IGNORE INTO friends(user_id,friend_id,status) VALUES(%d,%d,0),(%d,%d,0)",
         uid, fid, fid, uid);
@@ -360,11 +407,12 @@ int db_group_create(int owner, const char *name) {
         "INSERT INTO chat_groups(name,owner_id) VALUES('%s',%d)", en, owner);
     LOCK();
     int gid = -1;
-    if (mysql_query(g_conn, sql) == 0) {
-        gid = (int)mysql_insert_id(g_conn);
+    if (mysql_query(g_conn, sql) == 0) {          /* 第一步: 建群成功 */
+        gid = (int)mysql_insert_id(g_conn);       /* 拿到新群的自增 id */
+        /* 第二步: 复用 sql 缓冲, 把群主本人写进成员表(创建者即首个成员) */
         snprintf(sql, sizeof(sql),
             "INSERT INTO group_members(group_id,user_id) VALUES(%d,%d)", gid, owner);
-        mysql_query(g_conn, sql);
+        mysql_query(g_conn, sql);                 /* 成员插入失败这里未回滚, 教学从简 */
     }
     UNLOCK();
     return gid;
@@ -412,6 +460,7 @@ int db_group_members(int gid, int *ids, int max) {
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
+        /* n < max 防越界: 数组满了就停止读取(多出的成员被忽略) */
         while (r && n < max && (row = mysql_fetch_row(r))) ids[n++] = atoi(row[0]);
         if (r) mysql_free_result(r);
     }
@@ -426,17 +475,19 @@ int db_group_members(int gid, int *ids, int max) {
  *   type   0=私聊 1=群聊
  * content 可能含二进制/长文本, 故用堆上缓冲并 escape。返回新 msg_id, 失败 -1。 */
 int db_save_msg(int from, int target, int type, const char *content) {
-    char ec[MAX_BODY_LEN * 2 + 4];   /* 转义最坏膨胀一倍, 预留足够空间 */
+    char ec[MAX_BODY_LEN * 2 + 4];   /* 转义最坏膨胀一倍(每字符->2), +4 余量 */
     mysql_real_escape_string(g_conn, ec, content, strlen(content));
+    /* 转义后的正文可能很长(接近 8KB), 放不进普通栈数组, 故在堆上按实际长度
+     * 分配 sql 缓冲: 转义串长度 + 256(给 SQL 关键字/整数/引号留够空间)。 */
     char *sql = (char *)malloc(strlen(ec) + 256);
-    sprintf(sql,
+    sprintf(sql,   /* 缓冲已按长度分配, 这里用 sprintf 而非 snprintf 是安全的 */
         "INSERT INTO messages(from_id,target_id,msg_type,content) VALUES(%d,%d,%d,'%s')",
         from, target, type, ec);
     LOCK();
     int id = -1;
-    if (mysql_query(g_conn, sql) == 0) id = (int)mysql_insert_id(g_conn);
+    if (mysql_query(g_conn, sql) == 0) id = (int)mysql_insert_id(g_conn);  /* 返回新 msg_id */
     UNLOCK();
-    free(sql);
+    free(sql);       /* 堆缓冲用完即释放 */
     return id;
 }
 
@@ -492,12 +543,16 @@ static int fetch_rows(const char *sql, OfflineRow *rows, int max) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
         while (r && n < max && (row = mysql_fetch_row(r))) {
-            rows[n].from_id   = atoi(row[0]);
-            rows[n].target_id = atoi(row[1]);
-            rows[n].msg_type  = atoi(row[2]);
+            /* 按 SELECT 的 6 列顺序依次取值填进结构体 */
+            rows[n].from_id   = atoi(row[0]);   /* 发送者 id      */
+            rows[n].target_id = atoi(row[1]);   /* 私聊=对方 群聊=gid */
+            rows[n].msg_type  = atoi(row[2]);   /* 0 私聊 1 群聊  */
+            /* 字符串列都用 "row[i]?row[i]:\"\"" 兜住 NULL, 再 strncpy 限长拷贝
+             * (注意: strncpy 不保证结尾 0, 但 OfflineRow 已 memset 清零/字段够长,
+             *  且这里都留了 1 字节, 实际安全)。 */
             strncpy(rows[n].content,   row[3] ? row[3] : "", MAX_BODY_LEN - 1);
-            strncpy(rows[n].sent_at,   row[4] ? row[4] : "", 31);
-            strncpy(rows[n].from_name, row[5] ? row[5] : "", MAX_NAME_LEN - 1);
+            strncpy(rows[n].sent_at,   row[4] ? row[4] : "", 31);            /* 时间戳 */
+            strncpy(rows[n].from_name, row[5] ? row[5] : "", MAX_NAME_LEN - 1); /* 发送者昵称 */
             n++;
         }
         if (r) mysql_free_result(r);
@@ -510,13 +565,19 @@ static int fetch_rows(const char *sql, OfflineRow *rows, int max) {
  * 再 DELETE 掉该用户的全部离线记录(取走即消费)。返回取到的条数。 */
 int db_offline_take(int uid, OfflineRow *rows, int max) {
     char sql[512];
+    /* 三表 join 还原每条离线消息的完整信息:
+     *   offline_msg o  -- 谁有哪条待收(o.user_id=uid)
+     *   messages m     -- 正文/类型/时间 (m.id = o.message_id)
+     *   users u        -- 发送者昵称     (u.id = m.from_id)
+     * ORDER BY m.id ASC 保证按发送先后投递; LIMIT max 限制单次条数。 */
     snprintf(sql, sizeof(sql),
         "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.nickname "
         "FROM offline_msg o JOIN messages m ON m.id=o.message_id "
         "JOIN users u ON u.id=m.from_id "
         "WHERE o.user_id=%d ORDER BY m.id ASC LIMIT %d", uid, max);
     int n = fetch_rows(sql, rows, max);
-    /* 取走后删除 */
+    /* 取走即消费: 删除该用户所有离线记录(正文仍留在 messages 表供拉历史)。
+     * 注意与上面的读取不在同一事务, 极端并发下可能漏投新到的离线消息, 教学从简。 */
     char del[128];
     snprintf(del, sizeof(del), "DELETE FROM offline_msg WHERE user_id=%d", uid);
     LOCK(); mysql_query(g_conn, del); UNLOCK();
@@ -526,6 +587,8 @@ int db_offline_take(int uid, OfflineRow *rows, int max) {
 /* 拉取 a 与 b 之间的私聊历史(双向, 谁发给谁都算), 按时间升序, 最多 max 条。 */
 int db_history_priv(int a, int b, OfflineRow *rows, int max) {
     char sql[512];
+    /* 私聊双向: (a发b) OR (b发a) 两种方向都要, 故 WHERE 里两组条件用 OR。
+     * msg_type=0 限定私聊, 排除群消息。 */
     snprintf(sql, sizeof(sql),
         "SELECT m.from_id,m.target_id,m.msg_type,m.content,m.sent_at,u.nickname "
         "FROM messages m JOIN users u ON u.id=m.from_id "
@@ -549,11 +612,13 @@ int db_history_group(int gid, OfflineRow *rows, int max) {
  * 幂等设计: 若已存在同向且未处理(status=0)的申请, 就复用它并更新 hello,
  * 避免重复点"加好友"产生一堆待处理记录。返回 reqid, 失败 -1。 */
 int db_freq_put(int from_id, int to_id, const char *hello) {
-    char eh[512] = "";
+    char eh[512] = "";   /* 招呼语可空; 非空才转义, 空则保持空串 */
     if (hello && *hello) mysql_real_escape_string(g_conn, eh, hello, strlen(hello));
     char sql[1024];
+    /* 整个"查-改/插"要作为一个逻辑单元, 故一次 LOCK 罩住多条 SQL, 避免中途
+     * 被别的线程插入同一申请造成重复。 */
     LOCK();
-    /* 已存在 pending → 复用, 更新 hello */
+    /* 先查有没有同向且未处理(status=0)的申请 */
     snprintf(sql, sizeof(sql),
         "SELECT id FROM friend_requests WHERE from_id=%d AND to_id=%d AND status=0",
         from_id, to_id);
@@ -561,14 +626,16 @@ int db_freq_put(int from_id, int to_id, const char *hello) {
     if (!mysql_query(g_conn, sql)) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
-        if (r && (row = mysql_fetch_row(r))) reqid = atoi(row[0]);
+        if (r && (row = mysql_fetch_row(r))) reqid = atoi(row[0]);   /* 已有: 记下 reqid */
         if (r) mysql_free_result(r);
     }
     if (reqid > 0) {
+        /* 分支一: 复用旧申请, 只把招呼语更新成最新的 */
         snprintf(sql, sizeof(sql),
             "UPDATE friend_requests SET hello='%s' WHERE id=%d", eh, reqid);
         mysql_query(g_conn, sql);
     } else {
+        /* 分支二: 没有则新插一条, 拿到自增 id 作为 reqid */
         snprintf(sql, sizeof(sql),
             "INSERT INTO friend_requests(from_id,to_id,hello,status) VALUES(%d,%d,'%s',0)",
             from_id, to_id, eh);
@@ -777,6 +844,8 @@ int db_group_member_count(int gid) {
 int db_user_search(const char *q, char *out, int outsz,
                    int (*is_online)(int)) {
     char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
+    /* 判断关键字是不是"账号": 长度 >=6 且全为数字。只要出现一个非数字字符
+     * 就退回按昵称搜。这样用户既能输账号精确找人, 也能输名字模糊找人。 */
     int as_account = 0;
     if (strlen(q) >= 6) {
         as_account = 1;
@@ -784,10 +853,12 @@ int db_user_search(const char *q, char *out, int outsz,
     }
     char sql[512];
     if (as_account) {
-        int id = atoi(q) - ACCOUNT_BASE;
+        int id = atoi(q) - ACCOUNT_BASE;   /* 账号还原成内部 id, 精确查 */
         snprintf(sql, sizeof(sql),
             "SELECT id,nickname,avatar_color FROM users WHERE id=%d", id);
     } else {
+        /* 昵称模糊查: '%%%s%%' 经 snprintf 变成 '%关键字%'(前后各一个 % 通配),
+         * LIMIT 50 防止结果过多。 */
         snprintf(sql, sizeof(sql),
             "SELECT id,nickname,avatar_color FROM users "
             "WHERE nickname LIKE '%%%s%%' LIMIT 50", eq);
@@ -860,6 +931,16 @@ int db_group_search(const char *q, char *out, int outsz) {
 int db_msg_search(int user_id, const char *q, char *out, int outsz) {
     char eq[256]; mysql_real_escape_string(g_conn, eq, q, strlen(q));
     char sql[1024];
+    /* 关键的一句 SQL, 逐段看:
+     *   CASE...peer_raw: 算出"对话的另一方"。私聊时若我是发送者则对方是 target,
+     *                    否则对方是 from(用 IF 分流); 群聊时对方就是群号 target。
+     *   LEFT(content,80): 只取正文前 80 字符做摘要, 不必传回整条。
+     *   WHERE content LIKE '%关键字%': 命中关键字;
+     *   AND (...OR...): 再限定"与我相关"——私聊我收发过的, 或群聊里 target 群号
+     *                    在"我加入的群"子查询集合内。
+     *   ORDER BY sent_at DESC LIMIT 50: 最近的 50 条优先。
+     * 5 个 %d 依次对应: CASE 里的我、私聊 from、私聊 target、子查询里的我;
+     * %s 是关键字(已转义)。 */
     snprintf(sql, sizeof(sql),
         "SELECT m.id, m.sent_at, u.nickname, m.msg_type, "
         "       CASE WHEN m.msg_type=0 "
@@ -881,8 +962,9 @@ int db_msg_search(int user_id, const char *q, char *out, int outsz) {
         MYSQL_RES *r = mysql_store_result(g_conn);
         MYSQL_ROW row;
         while (r && (row = mysql_fetch_row(r))) {
-            int kind = atoi(row[3]);
-            int peer_raw = atoi(row[4]);
+            int kind = atoi(row[3]);           /* 0 私聊 1 群聊 */
+            int peer_raw = atoi(row[4]);       /* 上面 CASE 算出的对方 id / 群号 */
+            /* 私聊要把内部 id 还原成对外账号(+基数); 群聊 peer 本就是群号, 原样用 */
             int peer_display = (kind == 0) ? (peer_raw + ACCOUNT_BASE) : peer_raw;
             /* snippet 里的 \t \n 替换成空格, 避免冲掉行/列分隔 */
             char snippet[128] = {0};

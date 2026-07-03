@@ -14,18 +14,21 @@ static pthread_mutex_t g_mu  = PTHREAD_MUTEX_INITIALIZER;
 void online_init(void)    { memset(g_tab, 0, sizeof(g_tab)); g_cnt = 0; }
 void online_destroy(void) { pthread_mutex_destroy(&g_mu); }
 
+/* 登记一个用户为在线。若同一 user_id 已在线(同账号在别处登录), 则关掉旧连接
+ * 并用新 fd 顶替, 实现"顶号下线"。否则在表尾新增一项。表满返回 -1。 */
 int online_add(int user_id, const char *name, int fd) {
     pthread_mutex_lock(&g_mu);
-    /* 同名挤掉旧连接 */
+    /* 先找有没有同一 user_id 的旧记录 */
     for (int i = 0; i < g_cnt; ++i) {
         if (g_tab[i].user_id == user_id) {
-            close(g_tab[i].sockfd);
-            g_tab[i].sockfd = fd;
+            close(g_tab[i].sockfd);            /* 关旧连接: 旧客户端的 recv 会返回 0 而退出 */
+            g_tab[i].sockfd = fd;              /* 换成新连接的 fd */
             pthread_mutex_unlock(&g_mu);
             return 0;
         }
     }
-    if (g_cnt >= MAX_ONLINE_USERS) { pthread_mutex_unlock(&g_mu); return -1; }
+    if (g_cnt >= MAX_ONLINE_USERS) { pthread_mutex_unlock(&g_mu); return -1; }   /* 在线数已满 */
+    /* 新用户: 追加到数组末尾 */
     g_tab[g_cnt].user_id = user_id;
     g_tab[g_cnt].sockfd  = fd;
     strncpy(g_tab[g_cnt].username, name, MAX_NAME_LEN - 1);
@@ -79,11 +82,13 @@ int online_push(int user_id, const Message *m) {
     return r;
 }
 
+/* 把同一条消息群发给 ids[0..n) 里的每个用户, 跳过 except_id(通常是发送者自己,
+ * 传 -1 表示不跳过任何人)。返回成功投递(对方在线)的人数。 */
 int online_broadcast(const int *ids, int n, const Message *m, int except_id) {
     int delivered = 0;
     for (int i = 0; i < n; ++i) {
-        if (ids[i] == except_id) continue;
-        if (online_push(ids[i], m) == 0) delivered++;
+        if (ids[i] == except_id) continue;         /* 排除指定用户 */
+        if (online_push(ids[i], m) == 0) delivered++;   /* 逐个推, 在线才计数 */
     }
     return delivered;
 }

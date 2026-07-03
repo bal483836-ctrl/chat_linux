@@ -64,67 +64,79 @@ static void resp(int fd, int status, const char *text) {
     send_msg(fd, &m);
 }
 
-/* 拆分 "user\npass" */
+/* 把 body 里的 "用户\n口令" 拆成两段填进 u / p。返回 0 成功 / -1 格式错。
+ *   strchr 找换行符定位分隔点; nl-body 即用户名长度(指针相减得字节数);
+ *   用户名长度要在 (0, MAX_NAME_LEN) 内; 口令取换行之后的部分, 限长拷贝。 */
 static int split_userpass(const char *body, char *u, char *p) {
-    const char *nl = strchr(body, '\n');
-    if (!nl) return -1;
-    int ulen = nl - body;
+    const char *nl = strchr(body, '\n');       /* 找 '\n' 分隔 */
+    if (!nl) return -1;                          /* 没有换行 = 格式非法 */
+    int ulen = nl - body;                        /* 换行前的长度就是用户名长度 */
     if (ulen <= 0 || ulen >= MAX_NAME_LEN) return -1;
-    memcpy(u, body, ulen); u[ulen] = 0;
-    strncpy(p, nl + 1, MAX_PASS_LEN - 1);
+    memcpy(u, body, ulen); u[ulen] = 0;          /* 拷贝用户名并补 '\0' */
+    strncpy(p, nl + 1, MAX_PASS_LEN - 1);        /* 换行之后是口令 */
     return 0;
 }
 
 /* 供 db_friend_list 等做实时在线判定的回调: 内存在线表里查得到 fd 即在线。 */
 static int is_user_online(int uid) { return online_get_fd_by_id(uid) >= 0; }
 
-/* 头像 key 是否为群头像("g"+纯数字, 如 "g5"). 顺带防路径穿越. */
+/* 头像 key 是否为群头像("g"+纯数字, 如 "g5")。返回 1=是群头像 0=否。
+ * 逐字符校验 'g' 之后必须全是数字, 这既区分群/个人头像, 也顺带挡住形如
+ * "../.." 的路径穿越(非法字符直接判否), 后续才敢拿它拼文件名。 */
 static int avatar_group_key(const char *key) {
-    if (!key || key[0] != 'g' || !key[1]) return 0;
+    if (!key || key[0] != 'g' || !key[1]) return 0;   /* 必须以 'g' 开头且后面非空 */
     for (const char *p = key + 1; *p; ++p) if (*p < '0' || *p > '9') return 0;
     return 1;
 }
 
-/* 通知好友: 上下线广播.
- * 我们要给那些把我加为好友的人推 NOTIFY. friend_list 的第一列是账号. */
+/* 广播我的上/下线状态给"加了我的好友"。
+ * 做法: 拉我的好友列表(每行 "账号\t...\n"), 逐行取出第一列账号, 换算成 uid,
+ * 若对方在线就 push 一条 NOTIFY_ONLINE/OFFLINE, 让对方的界面实时刷新在线灯。
+ * online 参数: 1=上线 0=下线, 决定发哪种通知类型。 */
 static void notify_friends(int uid, const char *account, const char *nick, int online) {
     char list[8192]; list[0] = 0;
-    db_friend_list(uid, list, sizeof(list), is_user_online);
+    db_friend_list(uid, list, sizeof(list), is_user_online);   /* 取好友列表文本 */
+    /* 组一条通知消息模板: 发送者就是"我" */
     Message n;
     memset(&n, 0, sizeof(n));
     n.type = online ? MSG_NOTIFY_ONLINE : MSG_NOTIFY_OFFLINE;
     strncpy(n.from_name, account, MAX_NAME_LEN - 1);
     strncpy(n.from_nick, nick,    MAX_NAME_LEN - 1);
     fill_timestamp(n.timestamp, sizeof(n.timestamp));
+    /* strtok 按 '\n' 切成一行行(会就地改写 list, 所以 list 是可写副本) */
     char *line = strtok(list, "\n");
     while (line) {
-        char *tab = strchr(line, '\t');
+        char *tab = strchr(line, '\t');   /* 每行首列是账号, 到第一个 '\t' 为止 */
         if (tab) {
-            *tab = 0;            /* line 是账号字符串 */
+            *tab = 0;            /* 把 '\t' 截成 '\0', line 就成了纯账号字符串 */
             int fid = db_user_id_by_account(line);
-            if (fid > 0) online_push(fid, &n);
+            if (fid > 0) online_push(fid, &n);   /* 对方在线才推(不在线无所谓) */
         }
-        line = strtok(NULL, "\n");
+        line = strtok(NULL, "\n");   /* 下一行; strtok 靠内部静态状态续切 */
     }
 }
 
-/* 处理私聊 */
+/* 处理一条私聊消息, 是"在线直达 + 离线兜底 + 落库存档"三合一的典型流程。 */
 static void do_private(Session *s, Message *m) {
-    if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }
-    int to = db_user_id_by_account(m->to_name);
-    if (to < 0) { resp(s->fd, RS_USER_NOT_FOUND, m->to_name); return; }
-    if (db_is_black(to, s->uid)) {
+    if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }   /* 未登录拒绝 */
+    int to = db_user_id_by_account(m->to_name);                          /* 收方账号->uid */
+    if (to < 0) { resp(s->fd, RS_USER_NOT_FOUND, m->to_name); return; }   /* 查无此人 */
+    if (db_is_black(to, s->uid)) {                                       /* 我被对方拉黑 */
         resp(s->fd, RS_IN_BLACKLIST, "对方将你拉黑, 无法发送");
         return;
     }
+    /* 无论对方在不在线, 先落库拿到 msg_id(历史/离线都靠它) */
     int mid = db_save_msg(s->uid, to, 0, m->body);
+    /* 以收到的消息为模板改造成"服务器转发版": 补上真实发送者账号/昵称/时间戳,
+     * 覆盖客户端可能乱填的字段, 防伪造。 */
     Message out = *m;
     out.type = MSG_PRIVATE_CHAT;
     strncpy(out.from_name, s->account, MAX_NAME_LEN - 1);
     strncpy(out.from_nick, s->nick,    MAX_NAME_LEN - 1);
     fill_timestamp(out.timestamp, sizeof(out.timestamp));
+    /* 尝试在线直推; push 失败(对方不在线)且已落库, 就记入离线队列等其上线补发 */
     if (online_push(to, &out) < 0 && mid > 0) db_offline_put(to, mid);
-    resp(s->fd, RS_OK, "sent");
+    resp(s->fd, RS_OK, "sent");   /* 给发送方回执 */
 }
 
 /* 把最新群成员列表推给群里的每个在线成员(退群/邀请后调用, 让大家实时看到变化) */
@@ -150,18 +162,20 @@ static void push_group_members(int gid) {
     online_broadcast(ids, n, &o, -1);
 }
 
-/* 处理群聊 */
+/* 处理一条群聊消息: 与私聊类似, 只是收方从"一个人"变成"群里每个成员"。 */
 static void do_group(Session *s, Message *m) {
     if (s->uid < 0) { resp(s->fd, RS_AUTH_FAIL, "not login"); return; }
     int members[1024];
-    int n = db_group_members(m->group_id, members, 1024);
+    int n = db_group_members(m->group_id, members, 1024);            /* 取全体成员 */
     if (n <= 0) { resp(s->fd, RS_GROUP_NOT_FOUND, "no such group"); return; }
-    int mid = db_save_msg(s->uid, m->group_id, 1, m->body);
-    Message out = *m;
+    int mid = db_save_msg(s->uid, m->group_id, 1, m->body);          /* 落库(type=1 群聊) */
+    Message out = *m;                                                /* 同样重填发送者信息 */
     out.type = MSG_GROUP_CHAT;
     strncpy(out.from_name, s->account, MAX_NAME_LEN - 1);
     strncpy(out.from_nick, s->nick,    MAX_NAME_LEN - 1);
     fill_timestamp(out.timestamp, sizeof(out.timestamp));
+    /* 遍历成员逐个投递: 跳过自己(发送者不用收自己的消息);
+     * 在线则直推, 不在线则给这一个成员单独入离线队列。 */
     for (int i = 0; i < n; ++i) {
         if (members[i] == s->uid) continue;
         if (online_push(members[i], &out) < 0 && mid > 0)
@@ -174,17 +188,19 @@ static void do_group(Session *s, Message *m) {
  * 文件消息与文本消息共用此通路, 保证离线可达 + 历史可拉。
  * is_group=1: target=gid, 推给除自己外全部成员; 否则 target=对方 uid。 */
 static void dispatch_saved(Session *s, int is_group, int target, int msgid, const char *content) {
+    /* 先拼好一条完整的转发消息(内容由调用方给, 通常是文件消息标记串) */
     Message out;
     memset(&out, 0, sizeof(out));
     out.type = is_group ? MSG_GROUP_CHAT : MSG_PRIVATE_CHAT;
-    out.group_id = is_group ? target : 0;
+    out.group_id = is_group ? target : 0;                       /* 群聊带群号 */
     strncpy(out.from_name, s->account, MAX_NAME_LEN - 1);
     strncpy(out.from_nick, s->nick,    MAX_NAME_LEN - 1);
-    if (!is_group)
+    if (!is_group)                                              /* 私聊补收方账号 */
         snprintf(out.to_name, MAX_NAME_LEN, "%d", target + ACCOUNT_BASE);
     fill_timestamp(out.timestamp, sizeof(out.timestamp));
     strncpy(out.body, content, MAX_BODY_LEN - 1);
     out.body_len = strlen(out.body);
+    /* 投递: 群聊遍历成员(跳过自己), 私聊只发对方; 均是"在线直推, 否则入离线" */
     if (is_group) {
         int members[1024];
         int n = db_group_members(target, members, 1024);
@@ -202,28 +218,35 @@ static void dispatch_saved(Session *s, int is_group, int target, int msgid, cons
     if (memcmp(out.body, FILE_TAG, 6) == 0) online_push(s->uid, &out);
 }
 
-/* push_history: rows[i].from_name 已经是发送者昵称, from_id 给我们账号. */
+/* 把一批数据库取出的行(离线消息或历史记录)逐条转成 Message 发给客户端。
+ * 复用于三处: 登录补发离线、拉私聊历史、拉群聊历史。
+ * 注意 OfflineRow 里存的是内部 id, 这里都要 +ACCOUNT_BASE 还原成对外账号;
+ * from_name 字段在 OfflineRow 里其实存的是发送者昵称(见 fetch_rows)。 */
 static void push_history(int fd, OfflineRow *rows, int n) {
     for (int i = 0; i < n; ++i) {
         Message m;
         memset(&m, 0, sizeof(m));
+        /* msg_type 0/1 映射到私聊/群聊消息类型 */
         m.type     = rows[i].msg_type == 0 ? MSG_PRIVATE_CHAT : MSG_GROUP_CHAT;
-        m.group_id = rows[i].msg_type == 1 ? rows[i].target_id : 0;
+        m.group_id = rows[i].msg_type == 1 ? rows[i].target_id : 0;    /* 群聊带群号 */
         snprintf(m.from_name, MAX_NAME_LEN, "%d", rows[i].from_id + ACCOUNT_BASE);
         /* 私聊历史补上 to_name=接收方账号, 客户端才能正确归到对应会话 */
         if (rows[i].msg_type == 0)
             snprintf(m.to_name, MAX_NAME_LEN, "%d", rows[i].target_id + ACCOUNT_BASE);
-        strncpy(m.from_nick, rows[i].from_name, MAX_NAME_LEN - 1);
+        strncpy(m.from_nick, rows[i].from_name, MAX_NAME_LEN - 1);   /* 发送者昵称 */
         strncpy(m.timestamp, rows[i].sent_at,   sizeof(m.timestamp) - 1);
         strncpy(m.body,      rows[i].content,   MAX_BODY_LEN - 1);
         m.body_len = strlen(m.body);
-        send_msg(fd, &m);
+        send_msg(fd, &m);   /* 逐条同步发出 */
     }
 }
 
-/* 登录成功后的初始化: 推送好友列表 + 离线消息 */
+/* 登录成功后的"开场推送": 客户端刚进主界面, 服务器主动把它需要的初始数据
+ * 一股脑推过去, 于是界面一显示就是满的。顺序: 好友列表 -> 群列表 -> 待处理
+ * 好友申请 -> 待处理入群申请(仅群主) -> 补发离线消息 -> 广播我已上线。
+ * 每一项都是"建一个对应 type 的 Message, 用 db_* 把内容填进 body, send_msg 发出"。 */
 static void on_login_success(Session *s) {
-    /* 上线状态写库 */
+    /* 上线状态写库(持久化冗余, 实时在线仍以内存表为准) */
     db_set_online(s->uid, 1);
     /* 推送好友列表给自己 */
     Message lst;
@@ -270,21 +293,23 @@ void *client_thread(void *arg) {
     while (recv_msg(fd, &m) == 0) {
         switch (m.type) {
         case MSG_REGISTER: {
-            /* body = "nickname\npassword[\nemail]" */
+            /* 注册: body 是 "昵称\n口令[\n邮箱]"(邮箱可选)。这里手工按两个 '\n'
+             * 切三段。相比 split_userpass, 多了可选的第三段邮箱, 故单独解析。 */
             char nick[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0}, email[64] = {0};
-            const char *nl1 = strchr(m.body, '\n');
+            const char *nl1 = strchr(m.body, '\n');            /* 第一个换行: 昵称/口令分界 */
             if (!nl1) { resp(fd, RS_FAIL, "bad format"); break; }
             int nlen = nl1 - m.body; if (nlen <= 0 || nlen >= MAX_NAME_LEN) { resp(fd, RS_FAIL, "bad format"); break; }
-            memcpy(nick, m.body, nlen); nick[nlen] = 0;
-            const char *l2 = nl1 + 1;
-            const char *nl2 = strchr(l2, '\n');
-            if (nl2) {
+            memcpy(nick, m.body, nlen); nick[nlen] = 0;         /* 第一段=昵称 */
+            const char *l2 = nl1 + 1;                           /* 从口令段开头继续 */
+            const char *nl2 = strchr(l2, '\n');                 /* 第二个换行: 口令/邮箱分界 */
+            if (nl2) {                                          /* 有第三段=带邮箱 */
                 int plen = nl2 - l2; if (plen >= MAX_PASS_LEN) plen = MAX_PASS_LEN - 1;
-                memcpy(p, l2, plen); p[plen] = 0;
-                strncpy(email, nl2 + 1, sizeof(email) - 1);
-            } else {
+                memcpy(p, l2, plen); p[plen] = 0;               /* 第二段=口令 */
+                strncpy(email, nl2 + 1, sizeof(email) - 1);     /* 第三段=邮箱 */
+            } else {                                            /* 没有第三段=无邮箱 */
                 strncpy(p, l2, MAX_PASS_LEN - 1);
             }
+            /* 邮箱查重(有邮箱才查): 命中直接回"已注册", 避免 DB 唯一键报错 */
             if (email[0] && db_email_exists(email)) { resp(fd, RS_USER_EXIST, "该邮箱已注册"); break; }
             int id = db_register(nick, p, email);
             if (id < 0) { resp(fd, RS_FAIL, "注册失败(邮箱可能已被使用)"); break; }
@@ -310,19 +335,20 @@ void *client_thread(void *arg) {
             char first[MAX_NAME_LEN] = {0}, p[MAX_PASS_LEN] = {0};
             if (split_userpass(m.body, first, p) < 0) { resp(fd, RS_FAIL, "bad format"); break; }
             int id;
-            if (strchr(first, '@')) {          /* 邮箱登录 */
+            if (strchr(first, '@')) {          /* 含 '@' -> 当邮箱登录 */
                 id = db_login_by_email(first, p);
-            } else {                            /* 账号登录 */
-                int uid = atoi(first) - ACCOUNT_BASE;
+            } else {                            /* 否则当账号(数字)登录 */
+                int uid = atoi(first) - ACCOUNT_BASE;             /* 账号还原 uid */
                 if (uid <= 0) { resp(fd, RS_AUTH_FAIL, "账号格式错误"); break; }
                 id = db_login_by_id(uid, p);
             }
-            if (id < 0) { resp(fd, RS_AUTH_FAIL, "账号或密码错误"); break; }
+            if (id < 0) { resp(fd, RS_AUTH_FAIL, "账号或密码错误"); break; }  /* 认证失败 */
+            /* 认证通过: 把登录态写进本线程的会话结构 sess */
             char acc[MAX_NAME_LEN]; snprintf(acc, sizeof(acc), "%d", id + ACCOUNT_BASE);
             sess.uid = id;
             strncpy(sess.account, acc, MAX_NAME_LEN - 1);
-            db_get_nick(id, sess.nick, sizeof(sess.nick));
-            online_add(id, acc, fd);
+            db_get_nick(id, sess.nick, sizeof(sess.nick));       /* 缓存昵称, 转发消息时用 */
+            online_add(id, acc, fd);                             /* 登记到在线表(同账号会挤掉旧连接) */
             /* 应答 body = "<account>\n<nickname>" 客户端解析 */
             Message rr; memset(&rr, 0, sizeof(rr));
             rr.type = MSG_RESPONSE; rr.status = RS_OK;
@@ -526,20 +552,26 @@ void *client_thread(void *arg) {
             break;
         }
 
-        /* 文件/图片上传: 服务器把分片重组, FILE_END 时落盘 + 落库为一条"文件消息",
-         * 再走和文本一样的在线推送/离线入队通路(离线也能收到, 历史也能拉回)。 */
+        /* ===== 文件/图片上传, 一个三阶段状态机: BEGIN -> CHUNK... -> END =====
+         * 状态存在 Session 的 up_* 字段里。BEGIN 记录元信息并分配缓冲, 每个 CHUNK
+         * 往缓冲追加分片, END 时把缓冲整体落盘 + 落库成一条"文件消息", 然后走和文本
+         * 一样的分发通路(在线推/离线入队), 于是文件也支持离线送达和拉历史。 */
+
+        /* 阶段一: 开始上传。status=文件总字节数, body="文件名\tMIME"。 */
         case MSG_FILE_BEGIN: {
             if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
+            /* 若上一次上传没正常收尾, 先清掉残留缓冲, 从干净状态开始 */
             free(sess.up_buf); sess.up_buf = NULL; sess.up_len = 0; sess.up_cap = 0;
-            sess.up_size = m.status;
+            sess.up_size = m.status;                          /* 客户端声明的总大小 */
             if (sess.up_size == 0 || sess.up_size > MAX_FILE_BYTES) { resp(fd, RS_FAIL, "文件为空或过大"); break; }
-            /* body = "文件名\tMIME" */
+            /* 解析 body 里的 "文件名\tMIME": 用可写副本 b, 把 '\t' 切成 '\0' 分两段 */
             char b[MAX_BODY_LEN]; int bl = m.body_len < MAX_BODY_LEN ? m.body_len : MAX_BODY_LEN - 1;
             memcpy(b, m.body, bl); b[bl] = 0;
             char *tab = strchr(b, '\t');
             if (tab) { *tab = 0; strncpy(sess.up_mime, tab + 1, sizeof(sess.up_mime) - 1); sess.up_mime[sizeof(sess.up_mime)-1]=0; }
-            else sess.up_mime[0] = 0;
+            else sess.up_mime[0] = 0;                         /* 没给 MIME 就留空 */
             strncpy(sess.up_name, b, sizeof(sess.up_name) - 1); sess.up_name[sizeof(sess.up_name)-1]=0;
+            /* 确定收方: group_id>0 是发到群(要先校验群成员身份), 否则发给某人 */
             if (m.group_id > 0) {
                 if (!db_group_is_member(m.group_id, sess.uid)) { resp(fd, RS_FAIL, "你不是该群成员"); break; }
                 sess.up_is_group = 1; sess.up_target = m.group_id;
@@ -548,71 +580,80 @@ void *client_thread(void *arg) {
                 if (to < 0) { resp(fd, RS_USER_NOT_FOUND, m.to_name); break; }
                 sess.up_is_group = 0; sess.up_target = to;
             }
+            /* 按声明大小一次性预分配重组缓冲(malloc(0) 未定义, 故至少要 1 字节) */
             sess.up_cap = sess.up_size;
             sess.up_buf = (unsigned char *)malloc(sess.up_cap ? sess.up_cap : 1);
             if (!sess.up_buf) { resp(fd, RS_FAIL, "服务器内存不足"); }
             break;
         }
+        /* 阶段二: 收到一个分片, 追加到缓冲末尾。可能来很多个。 */
         case MSG_FILE_CHUNK: {
-            if (sess.uid < 0 || !sess.up_buf) break;
-            size_t need = sess.up_len + m.body_len;
-            if (need > sess.up_cap) {                 /* 容错扩容 */
-                if (need > MAX_FILE_BYTES) { free(sess.up_buf); sess.up_buf = NULL; break; }
+            if (sess.uid < 0 || !sess.up_buf) break;          /* 没在上传态就忽略 */
+            size_t need = sess.up_len + m.body_len;           /* 追加后所需总长 */
+            if (need > sess.up_cap) {                          /* 声明大小偏小的容错扩容 */
+                if (need > MAX_FILE_BYTES) { free(sess.up_buf); sess.up_buf = NULL; break; }  /* 超硬上限, 放弃 */
                 unsigned char *nb = (unsigned char *)realloc(sess.up_buf, need);
-                if (!nb) { free(sess.up_buf); sess.up_buf = NULL; break; }
+                if (!nb) { free(sess.up_buf); sess.up_buf = NULL; break; }   /* 扩容失败, 放弃 */
                 sess.up_buf = nb; sess.up_cap = need;
             }
-            memcpy(sess.up_buf + sess.up_len, m.body, m.body_len);
-            sess.up_len += m.body_len;
+            memcpy(sess.up_buf + sess.up_len, m.body, m.body_len);  /* 拷到当前写指针处 */
+            sess.up_len += m.body_len;                        /* 前移写指针 */
             break;
         }
+        /* 阶段三: 上传结束, 落盘 + 落库 + 分发。 */
         case MSG_FILE_END: {
             if (sess.uid < 0 || !sess.up_buf) break;
-            /* 先落库占位拿到 msgid(=fileid), 再落盘 data/files/<fileid>, 回填带 fileid 的标记 */
+            /* 巧妙之处: 先存一条占位消息拿到自增 msgid, 直接把它当作 fileid(文件名),
+             * 这样 fileid 天然唯一, 无需另建 id 生成器。 */
             int msgid = db_save_msg(sess.uid, sess.up_target, sess.up_is_group ? 1 : 0, FILE_TAG "pending");
             if (msgid > 0) {
-                mkdir("data", 0755); mkdir("data/files", 0755);
+                mkdir("data", 0755); mkdir("data/files", 0755);   /* 确保目录存在(已存在则无害) */
                 char path[128]; snprintf(path, sizeof(path), "data/files/%d", msgid);
                 FILE *fp = fopen(path, "wb");
-                if (fp) { fwrite(sess.up_buf, 1, sess.up_len, fp); fclose(fp); }
+                if (fp) { fwrite(sess.up_buf, 1, sess.up_len, fp); fclose(fp); }  /* 整块写盘 */
+                /* 回填正文为带完整元信息的文件标记: \001FILE\t<fileid>\t<名>\t<MIME>\t<大小> */
                 char content[256];
                 snprintf(content, sizeof(content), FILE_TAG "%d\t%s\t%s\t%u",
                          msgid, sess.up_name, sess.up_mime, sess.up_size);
                 db_update_msg_content(msgid, content);
+                /* 走通用分发: 收方在线收到文件消息, 不在线则入离线队列 */
                 dispatch_saved(&sess, sess.up_is_group, sess.up_target, msgid, content);
             }
-            free(sess.up_buf); sess.up_buf = NULL; sess.up_len = sess.up_cap = 0;
+            free(sess.up_buf); sess.up_buf = NULL; sess.up_len = sess.up_cap = 0;   /* 收尾清理 */
             /* 不回 RESPONSE(避免污染客户端应答队列); fileid 通过上面回推的文件消息补给发送方 */
             break;
         }
-        /* 下载: 客户端给 fileid(status), 服务器读盘分片发回(group_id 复用为 fileid) */
+        /* 下载: 客户端给 fileid(status), 服务器读盘, 用同样的 BEGIN/CHUNK/END 三段发回。
+         * 下行时 group_id 字段被复用来携带 fileid, 客户端据此把分片拼回对应的那条消息。 */
         case MSG_FILE_GET: {
             if (sess.uid < 0) { resp(fd, RS_AUTH_FAIL, "not login"); break; }
             int fileid = (int)m.status;
             int from_id = -1; char content[256] = {0};
-            if (db_msg_get(fileid, &from_id, content, sizeof(content)) < 0) break;
-            if (memcmp(content, FILE_TAG, 6) != 0) break;   /* 不是文件消息 */
-            /* content = \001FILE\t<fileid>\t<name>\t<mime>\t<size> */
-            char *p = content + 6;                          /* 跳过标记 */
-            char *f1 = strchr(p, '\t'); if (!f1) break;     /* fileid 段结束 */
-            char *name = f1 + 1;
-            char *f2 = strchr(name, '\t'); if (!f2) break; *f2 = 0;
+            if (db_msg_get(fileid, &from_id, content, sizeof(content)) < 0) break;   /* 查不到该消息 */
+            if (memcmp(content, FILE_TAG, 6) != 0) break;   /* 前 6 字节不是文件标记, 说明不是文件消息 */
+            /* 解析 content = \001FILE\t<fileid>\t<name>\t<mime>\t<size>
+             * 用 strchr 逐个找 '\t', 就地改成 '\0' 把各段切开, 指针指向每段开头。 */
+            char *p = content + 6;                          /* 跳过 6 字节的 "\001FILE\t" 标记 */
+            char *f1 = strchr(p, '\t'); if (!f1) break;     /* f1 指向 fileid 段之后的 '\t' */
+            char *name = f1 + 1;                            /* 文件名从这里开始 */
+            char *f2 = strchr(name, '\t'); if (!f2) break; *f2 = 0;   /* 截断文件名 */
             char *mime = f2 + 1;
-            char *f3 = strchr(mime, '\t'); if (!f3) break; *f3 = 0;
-            uint32_t size = (uint32_t)atol(f3 + 1);
+            char *f3 = strchr(mime, '\t'); if (!f3) break; *f3 = 0;   /* 截断 MIME */
+            uint32_t size = (uint32_t)atol(f3 + 1);         /* 最后一段是大小 */
             char path[128]; snprintf(path, sizeof(path), "data/files/%d", fileid);
             FILE *fp = fopen(path, "rb");
-            if (!fp) { resp(fd, RS_FAIL, "文件不存在"); break; }
+            if (!fp) { resp(fd, RS_FAIL, "文件不存在"); break; }   /* 库里有记录但盘上文件丢了 */
+            /* 带上原发送者账号/昵称, 客户端展示"谁发的文件" */
             char fromacc[MAX_NAME_LEN]; snprintf(fromacc, sizeof(fromacc), "%d", from_id + ACCOUNT_BASE);
             char fromnick[MAX_NAME_LEN] = {0}; db_get_nick(from_id, fromnick, sizeof(fromnick));
-            /* FILE_BEGIN */
+            /* (1) 先发 FILE_BEGIN: 带上文件名/MIME/总大小 */
             Message o; memset(&o, 0, sizeof(o));
             o.type = MSG_FILE_BEGIN; o.group_id = (uint32_t)fileid; o.status = size;
             strncpy(o.from_name, fromacc, MAX_NAME_LEN - 1);
             strncpy(o.from_nick, fromnick, MAX_NAME_LEN - 1);
             o.body_len = snprintf(o.body, MAX_BODY_LEN, "%s\t%s", name, mime);
             send_msg(fd, &o);
-            /* FILE_CHUNK * n */
+            /* (2) 循环读盘, 每读一块发一个 FILE_CHUNK */
             unsigned char buf[SRV_FILE_CHUNK]; size_t r;
             while ((r = fread(buf, 1, sizeof(buf), fp)) > 0) {
                 Message c; memset(&c, 0, sizeof(c));
@@ -621,7 +662,7 @@ void *client_thread(void *arg) {
                 send_msg(fd, &c);
             }
             fclose(fp);
-            /* FILE_END */
+            /* (3) 最后发 FILE_END 收尾, 客户端据此知道文件传完了 */
             Message e; memset(&e, 0, sizeof(e));
             e.type = MSG_FILE_END; e.group_id = (uint32_t)fileid;
             send_msg(fd, &e);

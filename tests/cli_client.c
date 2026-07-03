@@ -51,18 +51,20 @@ static const char *type_name(int t) {
     }
 }
 
+/* 后台接收线程: 循环收消息并单行打印到 stdout, 便于测试脚本 grep 断言。
+ * body 里的换行替换成 '|' 以免破坏"一条消息一行"的格式; 最多截取 250 字节。 */
 static void *recv_th(void *_) {
     (void)_;
     Message m;
     while (recv_msg(g_fd, &m) == 0) {
         char body[256] = {0};
-        int n = m.body_len < 250 ? m.body_len : 250;
+        int n = m.body_len < 250 ? m.body_len : 250;   /* 限长, 防超长 body 刷屏 */
         memcpy(body, m.body, n);
-        for (int i = 0; i < n; ++i) if (body[i] == '\n') body[i] = '|';
+        for (int i = 0; i < n; ++i) if (body[i] == '\n') body[i] = '|';   /* 换行->竖线 */
         printf("<< type=%-7s status=%u group=%u from=%s to=%s body=\"%s\"\n",
                type_name(m.type), m.status, m.group_id,
                m.from_name, m.to_name, body);
-        fflush(stdout);
+        fflush(stdout);   /* 立即刷出, 保证测试能实时读到 */
     }
     return NULL;
 }
@@ -97,6 +99,8 @@ int main(int argc, char **argv) {
 
     char line[1024];
     while (fgets(line, sizeof(line), stdin)) {
+        /* 把一行拆成: 命令 cmd + 第一参数 a + 其余 rest(可含空格, 直到行尾)。
+         * "%899[^\n]" 表示读到换行前的所有字符。返回匹配数 <1 说明是空行, 跳过。 */
         char cmd[16] = {0}, a[64] = {0}, rest[900] = {0};
         int gid = 0;
         if (sscanf(line, "%15s %63s %899[^\n]", cmd, a, rest) < 1) continue;
